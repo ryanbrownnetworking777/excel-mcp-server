@@ -9,3 +9,6 @@ dist/
 .clinerules-default
 # repomix
 repomix-output.xml
+
+# Local reference files
+pr_link.txt

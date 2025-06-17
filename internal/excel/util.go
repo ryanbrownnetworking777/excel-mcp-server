@@ -9,8 +9,18 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// parseRange parses Excel's range string (e.g. A1:C10)
+// parseRange parses Excel's range string (e.g. A1:C10 or single cell A1)
 func ParseRange(rangeStr string) (int, int, int, int, error) {
+	// Handle single cell references (e.g., "A1" -> treat as "A1:A1")
+	if !regexp.MustCompile(`:`).MatchString(rangeStr) {
+		startCol, startRow, err := excelize.CellNameToCoordinates(rangeStr)
+		if err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("invalid cell reference: %s", rangeStr)
+		}
+		return startCol, startRow, startCol, startRow, nil
+	}
+	
+	// Handle range format (A1:B2)
 	re := regexp.MustCompile(`(\$?[A-Z]+\$?\d+):(\$?[A-Z]+\$?\d+)`)
 	matches := re.FindStringSubmatch(rangeStr)
 	if matches == nil {

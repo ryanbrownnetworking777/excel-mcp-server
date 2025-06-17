@@ -12,20 +12,26 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
+// ExcelWriteToSheetArguments defines the structure for writing Excel data
+// Excel書き込み引数の構造体だよ〜 (◕‿◕)✨
 type ExcelWriteToSheetArguments struct {
-	FileAbsolutePath string     `zog:"fileAbsolutePath"`
-	SheetName        string     `zog:"sheetName"`
-	NewSheet         bool       `zog:"newSheet"`
-	Range            string     `zog:"range"`
-	Values           [][]string `zog:"values"`
+	FileAbsolutePath string `zog:"fileAbsolutePath"`
+	SheetName        string `zog:"sheetName"`
+	NewSheet         bool   `zog:"newSheet"`
+	Range            string `zog:"range"`
+	// Values handled manually due to mixed type support
+	// 混合型サポートのため手動処理するのです！(｡◕‿‿◕｡)
 }
 
+// Schema validation for Excel write arguments
+// Excelの書き込み引数のスキーマバリデーション〜 ٩(◕‿◕)۶
 var excelWriteToSheetArgumentsSchema = z.Struct(z.Schema{
 	"fileAbsolutePath": z.String().Test(AbsolutePathTest()).Required(),
 	"sheetName":        z.String().Required(),
 	"newSheet":         z.Bool().Required().Default(false),
 	"range":            z.String().Required(),
-	"values":           z.Slice(z.Slice(z.String())).Required(),
+	// values omitted - handled manually to support mixed types as promised in MCP schema
+	// valuesは省略 - MCPスキーマで約束した混合型をサポートするため手動処理なのです！ ╰( ͡° ͜ʖ ͡° )つ──☆*:・ﾟ
 })
 
 func AddExcelWriteToSheetTool(server *server.MCPServer) {
@@ -80,18 +86,29 @@ func handleWriteToSheet(ctx context.Context, request mcp.CallToolRequest) (*mcp.
 		return imcp.NewToolResultZogIssueMap(issues), nil
 	}
 
-	// zog が any type のスキーマをサポートしていないため、自力で実装
-	valuesArg, ok := request.Params.Arguments["values"].([]any)
+	// Handle values manually to support mixed types (string, number, boolean, null)
+	// as promised in the MCP tool schema - this fixes Claude Desktop compatibility! 
+	// 混合型（文字列、数値、ブール値、null）をサポートするため手動処理です〜
+	// MCPツールスキーマで約束したとおりに！Claude Desktopとの互換性を修正するのです！ (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+	valuesArg, ok := request.Params.Arguments["values"]
+	if !ok {
+		return imcp.NewToolResultInvalidArgumentError("missing required parameter: values"), nil
+	}
+	
+	valuesArray, ok := valuesArg.([]any)
 	if !ok {
 		return imcp.NewToolResultInvalidArgumentError("values must be a 2D array"), nil
 	}
-	values := make([][]any, len(valuesArg))
-	for i, v := range valuesArg {
-		value, ok := v.([]any)
+	
+	// Convert to proper 2D array format that matches our MCP schema promise
+	// MCPスキーマの約束に合う適切な2D配列形式に変換だー！ ヽ(°〇°)ﾉ
+	values := make([][]any, len(valuesArray))
+	for i, rowAny := range valuesArray {
+		row, ok := rowAny.([]any)
 		if !ok {
-			return imcp.NewToolResultInvalidArgumentError("values must be a 2D array"), nil
+			return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("values[%d] must be an array", i)), nil
 		}
-		values[i] = value
+		values[i] = row
 	}
 
 	return writeSheet(args.FileAbsolutePath, args.SheetName, args.NewSheet, args.Range, values)
@@ -122,13 +139,15 @@ func writeSheet(fileAbsolutePath string, sheetName string, newSheet bool, rangeS
 		return imcp.NewToolResultInvalidArgumentError(err.Error()), nil
 	}
 
-	// データの整合性チェック
+	// Data integrity check - making sure dimensions match perfectly!
+	// データの整合性チェック - 寸法がピッタリ合うか確認するのです！ (｡･ω･｡)ﾉ♡
 	rangeRowSize := endRow - startRow + 1
 	if len(values) != rangeRowSize {
 		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("number of rows in data (%d) does not match range size (%d)", len(values), rangeRowSize)), nil
 	}
 
-	// データの書き込み
+	// Time to write the data! Let's make some Excel magic happen ✨
+	// データの書き込みタイム！Excelの魔法を発動させるのです！ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
 	wroteFormula := false
 	for i, row := range values {
 		rangeColumnSize := endCol - startCol + 1
@@ -141,11 +160,13 @@ func writeSheet(fileAbsolutePath string, sheetName string, newSheet bool, rangeS
 				return nil, err
 			}
 			if cellStr, ok := cellValue.(string); ok && isFormula(cellStr) {
-				// if cellValue is formula, set it as formula
+				// Formula detected! Time for some spreadsheet calculations! 📊
+				// 数式発見！スプレッドシートの計算タイムです！ 📊(*＾▽＾*)
 				err = worksheet.SetFormula(cell, cellStr)
 				wroteFormula = true
 			} else {
-				// if cellValue is not formula, set it as value
+				// Regular value - just write it directly! Simple and clean~
+				// 普通の値 - そのまま書き込むだけ！シンプルでキレイ～ (´∀｀)♡
 				err = worksheet.SetValue(cell, cellValue)
 			}
 			if err != nil {
