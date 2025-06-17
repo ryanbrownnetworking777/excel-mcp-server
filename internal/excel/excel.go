@@ -1,6 +1,9 @@
 package excel
 
 import (
+	"os"
+	"path/filepath"
+
 	"github.com/xuri/excelize/v2"
 )
 
@@ -60,18 +63,67 @@ type PivotTable struct {
 // OpenFile opens an Excel file and returns an Excel interface.
 // It first tries to open the file using OLE automation, and if that fails,
 // it tries to using the excelize library.
+// If the file doesn't exist, it creates a new Excel file.
 func OpenFile(absoluteFilePath string) (Excel, func(), error) {
-	ole, releaseFn, err := NewExcelOle(absoluteFilePath)
-	if err == nil {
-		return ole, releaseFn, nil
+	// Check if file exists first
+	fileExists := true
+	if _, err := os.Stat(absoluteFilePath); os.IsNotExist(err) {
+		fileExists = false
 	}
-	// If OLE fails, try Excelize
+	
+	if fileExists {
+		// Try OLE for existing files
+		ole, releaseFn, err := NewExcelOle(absoluteFilePath)
+		if err == nil {
+			return ole, releaseFn, nil
+		}
+	} else {
+		// Try OLE for new files (Windows only)
+		ole, releaseFn, err := NewExcelOleWithNewFile(absoluteFilePath)
+		if err == nil {
+			return ole, releaseFn, nil
+		}
+	}
+	
+	// If OLE fails or not available, use Excelize
+	return OpenOrCreateFile(absoluteFilePath)
+}
+
+// OpenOrCreateFile opens an existing Excel file or creates a new one if it doesn't exist.
+func OpenOrCreateFile(absoluteFilePath string) (Excel, func(), error) {
+	// Check if file exists
+	if _, err := os.Stat(absoluteFilePath); os.IsNotExist(err) {
+		// File doesn't exist, create a new one
+		return CreateNewFile(absoluteFilePath)
+	}
+	
+	// File exists, try to open it
 	workbook, err := excelize.OpenFile(absoluteFilePath)
 	if err != nil {
 		return nil, func() {}, err
 	}
-	excelize := NewExcelizeExcel(workbook)
-	return excelize, func() {
+	excel := NewExcelizeExcel(workbook)
+	return excel, func() {
+		workbook.Close()
+	}, nil
+}
+
+// CreateNewFile creates a new Excel file at the specified path.
+func CreateNewFile(absoluteFilePath string) (Excel, func(), error) {
+	// Ensure the directory exists
+	dir := filepath.Dir(absoluteFilePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, func() {}, err
+	}
+	
+	// Create new workbook
+	workbook := excelize.NewFile()
+	
+	// Set the file path for saving
+	workbook.Path = absoluteFilePath
+	
+	excel := NewExcelizeExcel(workbook)
+	return excel, func() {
 		workbook.Close()
 	}, nil
 }

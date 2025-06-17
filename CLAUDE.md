@@ -1,0 +1,82 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## プロジェクト概要
+
+Excel MCP ServerはModel Context Protocol（MCP）を使用してMicrosoft Excelファイルの読み書きを行うサーバーです。GoとTypeScriptのハイブリッドプロジェクトで、MCPツールとしてExcelデータの操作機能を提供します。
+
+## ビルドコマンド
+
+```bash
+# プロジェクト全体のビルド（Go + TypeScript）
+npm run build
+
+# TypeScriptのwatch mode
+npm run watch
+
+# デバッグ用のMCPインスペクター起動
+npm run debug
+```
+
+## アーキテクチャ
+
+### コアコンポーネント
+
+- **Goバックエンド**: 実際のExcel操作を担当
+  - `cmd/excel-mcp-server/main.go`: エントリーポイント
+  - `internal/server/server.go`: MCPサーバー実装
+  - `internal/excel/`: Excel操作のインターフェースと実装
+  - `internal/tools/`: MCPツールの実装
+
+- **TypeScriptランチャー**: 
+  - `launcher/launcher.ts`: プラットフォーム固有のバイナリを起動
+  - Goバイナリの配布とプロセス管理を担当
+
+### Excel操作層
+
+- **Excel Interface**: `internal/excel/excel.go`で定義された抽象インターフェース
+- **実装方式**:
+  - `excel_excelize.go`: xuri/excelizeライブラリ使用（クロスプラットフォーム）
+  - `excel_ole.go`: OLE自動化使用（Windows専用、ライブ編集対応）
+
+### ツール構成
+
+全てのMCPツールは`internal/tools/`に実装：
+- `excel_create_file.go`: **新規Excelファイル作成**
+- `excel_describe_sheets.go`: シート情報取得
+- `excel_read_sheet.go`: データ読み取り（ページネーション対応）
+- `excel_write_to_sheet.go`: データ書き込み（新規ファイル対応）
+- `excel_create_table.go`: テーブル作成
+- `excel_copy_sheet.go`: シートコピー
+- `excel_screen_capture.go`: スクリーンキャプチャ（Windows専用）
+
+### 設定
+
+環境変数での動作制御：
+- `EXCEL_MCP_PAGING_CELLS_LIMIT`: ページング時の最大セル数（デフォルト: 4000）
+
+## 新規ファイル作成機能
+
+### 自動ファイル作成
+- **全てのツール**が存在しないファイルパスに対して自動的に新規ファイルを作成
+- `excel.OpenFile()`が`excel.CreateNewFile()`にフォールバック
+- ディレクトリが存在しない場合は自動作成
+
+### 実装詳細
+- **Excelizeバックエンド**: `excelize.NewFile()`で新規ワークブック作成
+- **OLEバックエンド**: `NewExcelOleWithNewFile()`でExcelアプリケーション経由作成
+- **クロスプラットフォーム対応**: macOS/LinuxではExcelizeを使用
+
+### 使用可能なツール
+- `excel_create_file`: 明示的な新規ファイル作成（カスタムシート名対応）
+- `excel_write_to_sheet`: データ書き込み時の自動ファイル作成
+- その他全ツール: 存在しないファイルに対する自動作成
+
+## 開発時の注意点
+
+- Windowsでのみ利用可能な機能は`runtime.GOOS == "windows"`で条件分岐
+- ページネーション機能により大きなExcelファイルも効率的に処理
+- GoReleaserによるマルチプラットフォームバイナリ生成（`.goreleaser.yaml`）
+- NPMパッケージとしてTypeScriptランチャー経由で配布
+- **新規ファイル作成**: 全ツールが非存在ファイルパスに対応

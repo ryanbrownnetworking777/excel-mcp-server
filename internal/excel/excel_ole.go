@@ -92,6 +92,46 @@ func NewExcelOleWithNewObject(absolutePath string) (*OleExcel, func(), error) {
 	}, nil
 }
 
+func NewExcelOleWithNewFile(absolutePath string) (*OleExcel, func(), error) {
+	ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
+
+	unknown, err := oleutil.CreateObject("Excel.Application")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	excel, err := unknown.QueryInterface(ole.IID_IDispatch)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	workbooks := oleutil.MustGetProperty(excel, "Workbooks").ToIDispatch()
+	
+	// Create a new workbook
+	workbook, err := oleutil.CallMethod(workbooks, "Add")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	w := workbook.ToIDispatch()
+	
+	// Save the new workbook to the specified path
+	_, saveErr := oleutil.CallMethod(w, "SaveAs", absolutePath)
+	if saveErr != nil {
+		w.Release()
+		workbooks.Release()
+		excel.Release()
+		oleutil.CallMethod(excel, "Close")
+		ole.CoUninitialize()
+		return nil, func() {}, saveErr
+	}
+	
+	return &OleExcel{workbook: w}, func() {
+		w.Release()
+		workbooks.Release()
+		excel.Release()
+		oleutil.CallMethod(excel, "Close")
+		ole.CoUninitialize()
+	}, nil
+}
+
 func (o *OleExcel) GetBackendName() string {
 	return "ole"
 }

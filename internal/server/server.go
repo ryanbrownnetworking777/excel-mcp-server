@@ -17,6 +17,7 @@ func New(version string) *ExcelServer {
 		"excel-mcp-server",
 		version,
 	)
+	tools.AddExcelCreateFileTool(s.server)
 	tools.AddExcelDescribeSheetsTool(s.server)
 	tools.AddExcelReadSheetTool(s.server)
 	if runtime.GOOS == "windows" {
