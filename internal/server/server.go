@@ -24,6 +24,7 @@ func New(version string) *ExcelServer {
 		tools.AddExcelScreenCaptureTool(s.server)
 	}
 	tools.AddExcelWriteToSheetTool(s.server)
+	tools.AddExcelFormatCellsTool(s.server)
 	tools.AddExcelCreateTableTool(s.server)
 	tools.AddExcelCopySheetTool(s.server)
 	return s

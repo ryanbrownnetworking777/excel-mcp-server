@@ -235,6 +235,16 @@ func (o *OleExcel) Save() error {
 	return nil
 }
 
+// FormatCells applies formatting to a range of cells using OLE automation
+// OLE自動化を使ってセルの範囲にフォーマットを適用するのです！ 🎨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+func (o *OleExcel) FormatCells(sheetName, rangeStr string, style map[string]interface{}) error {
+	// OLE formatting implementation can be added here for advanced Excel integration
+	// より高度なExcel統合のためのOLEフォーマット実装をここに追加できるのです！ ✨
+	// For now, return a not implemented error
+	// とりあえず未実装エラーを返すのです (>_<)
+	return fmt.Errorf("OLE formatting not yet implemented - use Excelize backend for formatting")
+}
+
 func (o *OleWorksheet) Release() {
 	o.worksheet.Release()
 }

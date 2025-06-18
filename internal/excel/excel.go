@@ -20,6 +20,9 @@ type Excel interface {
 	CopySheet(srcSheetName, destSheetName string) error
 	// Save saves the Excel file.
 	Save() error
+	// FormatCells applies formatting to a range of cells
+	// セルの範囲にフォーマットを適用するのです！ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+	FormatCells(sheetName, rangeStr string, style map[string]interface{}) error
 }
 
 type Worksheet interface {

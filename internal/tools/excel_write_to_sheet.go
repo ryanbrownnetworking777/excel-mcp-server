@@ -149,6 +149,9 @@ func writeSheet(fileAbsolutePath string, sheetName string, newSheet bool, rangeS
 	// Time to write the data! Let's make some Excel magic happen ✨
 	// データの書き込みタイム！Excelの魔法を発動させるのです！ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
 	wroteFormula := false
+	var formulaCells []string // Track formula cells for validation
+	// 数式セルの検証用トラッキング配列だよ～ (◕‿◕)♡
+	
 	for i, row := range values {
 		rangeColumnSize := endCol - startCol + 1
 		if len(row) != rangeColumnSize {
@@ -164,6 +167,7 @@ func writeSheet(fileAbsolutePath string, sheetName string, newSheet bool, rangeS
 				// 数式発見！スプレッドシートの計算タイムです！ 📊(*＾▽＾*)
 				err = worksheet.SetFormula(cell, cellStr)
 				wroteFormula = true
+				formulaCells = append(formulaCells, cell) // Track for validation
 			} else {
 				// Regular value - just write it directly! Simple and clean~
 				// 普通の値 - そのまま書き込むだけ！シンプルでキレイ～ (´∀｀)♡
@@ -177,6 +181,15 @@ func writeSheet(fileAbsolutePath string, sheetName string, newSheet bool, rangeS
 
 	if err := workbook.Save(); err != nil {
 		return nil, err
+	}
+
+	// Get formula results and validate for errors after saving! 🔍
+	// 保存後に数式結果を取得してエラーをチェックするのです！ 🔍(｡◕‿◕｡)
+	var formulaResults []FormulaResult
+	var formulaErrors []FormulaError
+	if len(formulaCells) > 0 {
+		formulaResults = getFormulaResults(worksheet, formulaCells)
+		formulaErrors = validateFormulas(worksheet, formulaCells)
 	}
 
 	// HTMLテーブルの生成
@@ -195,14 +208,219 @@ func writeSheet(fileAbsolutePath string, sheetName string, newSheet bool, rangeS
 	html += "<ul>\n"
 	html += fmt.Sprintf("<li>backend: %s</li>\n", workbook.GetBackendName())
 	html += fmt.Sprintf("<li>sheet name: %s</li>\n", sheetName)
-	html += fmt.Sprintf("<li>read range: %s</li>\n", rangeStr)
+	html += fmt.Sprintf("<li>write range: %s</li>\n", rangeStr)
+	if len(formulaCells) > 0 {
+		html += fmt.Sprintf("<li>formulas written: %d</li>\n", len(formulaCells))
+	}
 	html += "</ul>\n"
+	
+	// Add formula results for Claude Desktop feedback! Critical for understanding formula output! 🔍
+	// Claude Desktopのフィードバック用数式結果を追加！数式の出力を理解するのに重要です！ 🔍✨
+	if len(formulaResults) > 0 {
+		html += "<h2>🔢 Formula Results</h2>\n"
+		html += "<div style='background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 15px; margin: 10px 0;'>\n"
+		html += "<p><strong>Calculated values for all formulas:</strong></p>\n"
+		html += "<table style='border-collapse: collapse; width: 100%; margin: 10px 0;'>\n"
+		html += "<tr style='background-color: #e9ecef;'>\n"
+		html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: left;'>Cell</th>\n"
+		html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: left;'>Formula</th>\n"
+		html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: left;'>Result</th>\n"
+		html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: center;'>Status</th>\n"
+		html += "</tr>\n"
+		
+		for _, result := range formulaResults {
+			statusColor := "green"
+			statusIcon := "✅"
+			if result.IsError {
+				statusColor = "red"
+				statusIcon = "❌"
+			}
+			
+			html += "<tr>\n"
+			html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px;'><strong>%s</strong></td>\n", result.Cell)
+			html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px;'><code>%s</code></td>\n", result.Formula)
+			html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; color: %s;'><strong>%s</strong></td>\n", statusColor, result.Value)
+			html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: center;'>%s</td>\n", statusIcon)
+			html += "</tr>\n"
+		}
+		html += "</table>\n"
+		html += "</div>\n"
+	}
+	
+	// Add detailed error information if any formulas failed
+	// エラーがある場合は詳細なエラー情報を追加するのです！ (╯°□°）╯
+	if len(formulaErrors) > 0 {
+		html += "<h2>⚠️ Formula Error Details</h2>\n"
+		html += "<div style='background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 10px 0;'>\n"
+		html += "<p><strong>Detailed error explanations:</strong></p>\n"
+		html += "<ul>\n"
+		for _, ferr := range formulaErrors {
+			html += fmt.Sprintf("<li><strong>Cell %s</strong>: <code>%s</code><br>", ferr.Cell, ferr.Formula)
+			html += fmt.Sprintf("   <span style='color: red;'>%s</span></li>\n", ferr.Error)
+		}
+		html += "</ul>\n"
+		html += "<p><em>Please review and correct these formulas before proceeding.</em></p>\n"
+		html += "</div>\n"
+	}
+	
 	html += "<h2>Notice</h2>\n"
-	html += "<p>Values wrote successfully.</p>\n"
+	if len(formulaErrors) > 0 {
+		html += fmt.Sprintf("<p>⚠️ Data written successfully, but %d formula(s) contain errors. Please review the errors above.</p>\n", len(formulaErrors))
+	} else {
+		html += "<p>✅ Values and formulas written successfully.</p>\n"
+	}
 
 	return mcp.NewToolResultText(html), nil
 }
 
 func isFormula(value string) bool {
 	return len(value) > 0 && value[0] == '='
+}
+
+// FormulaError represents a formula validation error
+// 数式検証エラーを表す構造体だよ～ (╯°□°）╯
+type FormulaError struct {
+	Cell    string `json:"cell"`
+	Formula string `json:"formula"`
+	Error   string `json:"error"`
+	Value   string `json:"value"`
+}
+
+// FormulaResult represents a formula and its calculated value
+// 数式とその計算結果を表す構造体です！ ٩(◕‿◕)۶
+type FormulaResult struct {
+	Cell    string `json:"cell"`
+	Formula string `json:"formula"`
+	Value   string `json:"value"`
+	IsError bool   `json:"isError"`
+}
+
+// getFormulaResults retrieves all formula results for Claude Desktop feedback
+// Claude Desktopのフィードバック用に全ての数式結果を取得するのです！ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+func getFormulaResults(worksheet excel.Worksheet, formulaCells []string) []FormulaResult {
+	var results []FormulaResult
+	
+	for _, cell := range formulaCells {
+		// Get the formula
+		formula, err := worksheet.GetFormula(cell)
+		if err != nil {
+			results = append(results, FormulaResult{
+				Cell:    cell,
+				Formula: "unknown",
+				Value:   "ERROR",
+				IsError: true,
+			})
+			continue
+		}
+		
+		// Get the calculated value
+		value, err := worksheet.GetValue(cell)
+		if err != nil {
+			results = append(results, FormulaResult{
+				Cell:    cell,
+				Formula: formula,
+				Value:   "ERROR",
+				IsError: true,
+			})
+			continue
+		}
+		
+		// Check if it's an Excel error
+		isError := isExcelError(value)
+		
+		results = append(results, FormulaResult{
+			Cell:    cell,
+			Formula: formula,
+			Value:   value,
+			IsError: isError,
+		})
+	}
+	
+	return results
+}
+
+// validateFormulas checks for Excel errors in formula cells
+// 数式セルのExcelエラーをチェックする関数です！ ٩(◕‿◕)۶
+func validateFormulas(worksheet excel.Worksheet, formulaCells []string) []FormulaError {
+	var errors []FormulaError
+	
+	for _, cell := range formulaCells {
+		// Get the formula
+		formula, err := worksheet.GetFormula(cell)
+		if err != nil {
+			errors = append(errors, FormulaError{
+				Cell:    cell,
+				Formula: "unknown",
+				Error:   fmt.Sprintf("Failed to get formula: %v", err),
+				Value:   "ERROR",
+			})
+			continue
+		}
+		
+		// Get the calculated value to check for Excel errors
+		value, err := worksheet.GetValue(cell)
+		if err != nil {
+			errors = append(errors, FormulaError{
+				Cell:    cell,
+				Formula: formula,
+				Error:   fmt.Sprintf("Failed to calculate: %v", err),
+				Value:   "ERROR",
+			})
+			continue
+		}
+		
+		// Check for common Excel error values
+		if isExcelError(value) {
+			errors = append(errors, FormulaError{
+				Cell:    cell,
+				Formula: formula,
+				Error:   getExcelErrorDescription(value),
+				Value:   value,
+			})
+		}
+	}
+	
+	return errors
+}
+
+// isExcelError checks if a value represents an Excel error
+// 値がExcelエラーかどうかチェックするのです！ (°o°)
+func isExcelError(value string) bool {
+	excelErrors := []string{
+		"#DIV/0!",   // Division by zero
+		"#N/A",      // Value not available  
+		"#NAME?",    // Name error
+		"#NULL!",    // Null error
+		"#NUM!",     // Number error
+		"#REF!",     // Reference error
+		"#VALUE!",   // Value error
+		"#GETTING_DATA", // Getting data (newer Excel)
+	}
+	
+	for _, errorCode := range excelErrors {
+		if value == errorCode {
+			return true
+		}
+	}
+	return false
+}
+
+// getExcelErrorDescription provides human-readable error descriptions
+// 人間が読みやすいエラー説明を提供するのです！ (´∀｀)
+func getExcelErrorDescription(errorCode string) string {
+	descriptions := map[string]string{
+		"#DIV/0!":        "Division by zero - check for empty cells or zero values in denominators",
+		"#N/A":           "Value not available - function cannot find referenced data",
+		"#NAME?":         "Name not recognized - check function names and cell references",
+		"#NULL!":         "Null error - invalid intersection of ranges",
+		"#NUM!":          "Number error - invalid numeric values or arguments",
+		"#REF!":          "Reference error - invalid cell reference",
+		"#VALUE!":        "Value error - wrong data type for function",
+		"#GETTING_DATA":  "Still calculating - data may not be fully loaded",
+	}
+	
+	if desc, exists := descriptions[errorCode]; exists {
+		return desc
+	}
+	return fmt.Sprintf("Unknown Excel error: %s", errorCode)
 }

@@ -85,6 +85,40 @@ func (w *ExcelizeExcel) Save() error {
 	return w.file.Write(file)
 }
 
+// FormatCells applies formatting to a range of cells using Excelize
+// Excelizeを使ってセルの範囲にフォーマットを適用するのです！ 🎨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+func (e *ExcelizeExcel) FormatCells(sheetName, rangeStr string, style map[string]interface{}) error {
+	// Create a new style with the provided formatting options
+	// 提供されたフォーマットオプションで新しいスタイルを作成するのです！ ✨
+	styleID, err := e.file.NewStyle(&excelize.Style{
+		Font:      createFontStyle(style),
+		Fill:      createFillStyle(style),
+		Alignment: createAlignmentStyle(style),
+		Border:    createBorderStyle(style),
+		NumFmt:    getNumberFormat(style),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create style: %w", err)
+	}
+
+	// Apply the style to the specified range
+	// 指定された範囲にスタイルを適用するのです！ (◕‿◕)♡
+	
+	// Parse the range to get start and end cells
+	// 範囲を解析して開始セルと終了セルを取得するのです！ ✨
+	startCell, endCell, err := parseRangeForExcelize(rangeStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse range %s: %w", rangeStr, err)
+	}
+	
+	err = e.file.SetCellStyle(sheetName, startCell, endCell, styleID)
+	if err != nil {
+		return fmt.Errorf("failed to apply style to range %s: %w", rangeStr, err)
+	}
+
+	return nil
+}
+
 type ExcelizeWorksheet struct {
 	file      *excelize.File
 	sheetName string
@@ -246,4 +280,254 @@ func (w *ExcelizeWorksheet) updateDimension(updatedCell string) error {
 	}
 	updatedDimension := fmt.Sprintf("%s:%s", startRange, endRange)
 	return w.file.SetSheetDimension(w.sheetName, updatedDimension)
+}
+
+// Style creation helper functions for Excel formatting
+// Excelフォーマット用のスタイル作成ヘルパー関数群だよ～ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+
+// createFontStyle creates font styling from format options
+// フォーマットオプションからフォントスタイルを作成するのです！ (◕‿◕)♡
+func createFontStyle(style map[string]interface{}) *excelize.Font {
+	font := &excelize.Font{}
+	
+	if color, ok := style["fontColor"].(string); ok && color != "" {
+		font.Color = strings.TrimPrefix(color, "#")
+	}
+	if name, ok := style["fontName"].(string); ok && name != "" {
+		font.Family = name
+	}
+	if size, ok := style["fontSize"].(float64); ok && size > 0 {
+		font.Size = size
+	}
+	if bold, ok := style["bold"].(bool); ok {
+		font.Bold = bold
+	}
+	if italic, ok := style["italic"].(bool); ok {
+		font.Italic = italic
+	}
+	if underline, ok := style["underline"].(bool); ok && underline {
+		font.Underline = "single"
+	}
+	if strike, ok := style["strikethrough"].(bool); ok {
+		font.Strike = strike
+	}
+	
+	return font
+}
+
+// createFillStyle creates background fill styling
+// 背景塗りつぶしスタイルを作成するのです！ 🎨(´∀｀)♡
+func createFillStyle(style map[string]interface{}) excelize.Fill {
+	fill := excelize.Fill{}
+	
+	if bgColor, ok := style["backgroundColor"].(string); ok && bgColor != "" {
+		fill.Type = "pattern"
+		fill.Pattern = 1 // solid fill
+		fill.Color = []string{strings.TrimPrefix(bgColor, "#")}
+	}
+	
+	return fill
+}
+
+// createAlignmentStyle creates text alignment styling  
+// テキスト配置スタイルを作成するのです！ (◕‿◕)
+func createAlignmentStyle(style map[string]interface{}) *excelize.Alignment {
+	alignment := &excelize.Alignment{}
+	
+	if hAlign, ok := style["horizontalAlign"].(string); ok && hAlign != "" {
+		alignment.Horizontal = hAlign
+	}
+	if vAlign, ok := style["verticalAlign"].(string); ok && vAlign != "" {
+		alignment.Vertical = vAlign
+	}
+	if wrap, ok := style["wrapText"].(bool); ok {
+		alignment.WrapText = wrap
+	}
+	
+	return alignment
+}
+
+// createBorderStyle creates border styling
+// ボーダースタイルを作成するのです！ ✨(｡◕‿◕｡)
+func createBorderStyle(style map[string]interface{}) []excelize.Border {
+	borders := []excelize.Border{}
+	
+	borderStyle, hasStyle := style["borderStyle"].(string)
+	borderColor, hasColor := style["borderColor"].(string)
+	
+	if hasStyle && borderStyle != "" && borderStyle != "none" {
+		color := "000000" // default black
+		if hasColor && borderColor != "" {
+			color = strings.TrimPrefix(borderColor, "#")
+		}
+		
+		// Apply border to all sides - top, bottom, left, right
+		// 上下左右全ての辺にボーダーを適用するのです！ ٩(◕‿◕)۶
+		sides := []string{"top", "bottom", "left", "right"}
+		for _, side := range sides {
+			borders = append(borders, excelize.Border{
+				Type:  side,
+				Color: color,
+				Style: getBorderStyleIndex(borderStyle),
+			})
+		}
+	}
+	
+	return borders
+}
+
+// getBorderStyleIndex converts border style string to Excelize index
+// ボーダースタイル文字列をExcelizeインデックスに変換するのです！ (´∀｀)
+func getBorderStyleIndex(borderStyle string) int {
+	switch borderStyle {
+	case "thin":
+		return 1
+	case "medium":
+		return 2
+	case "thick":
+		return 5
+	case "double":
+		return 6
+	default:
+		return 1 // default to thin
+	}
+}
+
+// getNumberFormat extracts number format from style options and maps to Excel format codes
+// スタイルオプションから数値フォーマットを抽出してExcelフォーマットコードにマッピングするのです！ ✨(◕‿◕)♡
+func getNumberFormat(style map[string]interface{}) int {
+	if numFormat, ok := style["numberFormat"].(string); ok && numFormat != "" {
+		// Map common number format strings to Excel built-in format codes
+		// 一般的な数値フォーマット文字列をExcelの組み込みフォーマットコードにマッピングするのです！ (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+		formatMap := map[string]int{
+			// Basic number formats
+			// 基本的な数値フォーマット ٩(◕‿◕)۶
+			"General":    0,
+			"0":          1,
+			"0.0":        2,
+			"0.00":       2,
+			"#,##0":      3,
+			"#,##0.0":    4,
+			"#,##0.00":   4,
+			
+			// Currency formats
+			// 通貨フォーマット 💰(´∀｀)♡
+			"$#,##0":       5,
+			"$#,##0.0":     6,
+			"$#,##0.00":    7,
+			"$#,##0.00_);[Red]($#,##0.00)": 8,
+			"0%":           9,
+			"0.0%":         10,
+			"0.00%":        10,
+			
+			// Date formats  
+			// 日付フォーマット 📅✨
+			"m/d/yyyy":      14,
+			"d-mmm-yy":      15,
+			"d-mmm":         16,
+			"mmm-yy":        17,
+			"h:mm AM/PM":    18,
+			"h:mm:ss AM/PM": 19,
+			"h:mm":          20,
+			"h:mm:ss":       21,
+			"m/d/yyyy h:mm": 22,
+			"mm/dd/yyyy":    14,
+			"dd/mm/yyyy":    14,
+			"yyyy-mm-dd":    14,
+			"yyyy/mm/dd":    14,
+			
+			// Time formats
+			// 時刻フォーマット ⏰(◕‿◕)
+			"mm:ss":         45,
+			"[h]:mm:ss":     46,
+			"mm:ss.0":       47,
+			"@":             49, // Text format
+			
+			// Extended currency formats
+			// 拡張通貨フォーマット 💸
+			"¥#,##0":       164, // CN¥ 
+			"€#,##0.00":    164, // Euro
+			"£#,##0.00":    164, // Pound
+			"₹#,##0.00":    164, // Rupee
+			
+			// Percentage with decimals
+			// 小数点付きパーセンテージ 📊
+			"#,##0%":       9,
+			"#,##0.0%":     10,
+			"#,##0.00%":    10,
+			
+			// Scientific notation  
+			// 科学記数法 🔬(´∀｀)
+			"0.00E+00":     11,
+			"##0.0E+0":     48,
+			
+			// Fractions
+			// 分数 ➗✨
+			"# ?/?":        12,
+			"# ??/??":      13,
+			"# ???/???":    13,
+			
+			// Accounting formats
+			// 会計フォーマット 💼
+			"_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)": 37,
+			"_($* #,##0_);_($* (#,##0);_($* \"-\"_);_(@_)": 38,
+			"_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)": 39,
+			"_($* #,##0.00_);_($* (#,##0.00);_($* \"-\"??_);_(@_)": 40,
+		}
+		
+		// Check if we have a direct mapping
+		// 直接マッピングがあるかチェックするのです！ (◕‿◕)
+		if code, exists := formatMap[numFormat]; exists {
+			return code
+		}
+		
+		// Try to match partial patterns for common formats
+		// 一般的なフォーマットの部分パターンをマッチしてみるのです！ ✨
+		switch {
+		case strings.Contains(numFormat, "$") && strings.Contains(numFormat, "#,##0.00"):
+			return 7 // Currency with 2 decimals
+		case strings.Contains(numFormat, "$") && strings.Contains(numFormat, "#,##0"):
+			return 5 // Currency with no decimals  
+		case strings.Contains(numFormat, "%"):
+			if strings.Contains(numFormat, ".00") {
+				return 10 // Percentage with 2 decimals
+			} else if strings.Contains(numFormat, ".0") {
+				return 10 // Percentage with 1 decimal
+			}
+			return 9 // Simple percentage
+		case strings.Contains(numFormat, "#,##0.00"):
+			return 4 // Number with thousands separator and 2 decimals
+		case strings.Contains(numFormat, "#,##0"):
+			return 3 // Number with thousands separator
+		case strings.Contains(numFormat, "0.00"):
+			return 2 // Number with 2 decimals
+		case strings.Contains(numFormat, "yyyy") || strings.Contains(numFormat, "mm") || strings.Contains(numFormat, "dd"):
+			return 14 // Date format
+		case strings.Contains(numFormat, "h:mm"):
+			return 20 // Time format
+		case numFormat == "@":
+			return 49 // Text format
+		}
+	}
+	
+	return 0 // Default to General format / 一般形式をデフォルトにするのです！ (´∀｀)♡
+}
+
+// parseRangeForExcelize parses a range string and returns start and end cells for Excelize
+// Excelize用に範囲文字列を解析して開始セルと終了セルを返すのです！ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+func parseRangeForExcelize(rangeStr string) (string, string, error) {
+	// Handle single cell references (e.g., "A1" -> "A1", "A1")
+	// 単一セル参照を処理するのです (e.g., "A1" -> "A1", "A1") (◕‿◕)♡
+	if !strings.Contains(rangeStr, ":") {
+		return rangeStr, rangeStr, nil
+	}
+	
+	// Handle range references (e.g., "A1:C3" -> "A1", "C3")
+	// 範囲参照を処理するのです (e.g., "A1:C3" -> "A1", "C3") ✨
+	parts := strings.Split(rangeStr, ":")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid range format: %s", rangeStr)
+	}
+	
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
 }
