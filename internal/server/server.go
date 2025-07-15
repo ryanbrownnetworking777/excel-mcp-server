@@ -18,6 +18,8 @@ func New(version string) *ExcelServer {
 		version,
 	)
 	tools.AddExcelCreateFileTool(s.server)
+	tools.AddExcelDeleteFileTool(s.server)
+	tools.AddExcelDeleteSheetTool(s.server)
 	tools.AddExcelDescribeSheetsTool(s.server)
 	tools.AddExcelReadSheetTool(s.server)
 	if runtime.GOOS == "windows" {
@@ -25,8 +27,18 @@ func New(version string) *ExcelServer {
 	}
 	tools.AddExcelWriteToSheetTool(s.server)
 	tools.AddExcelFormatCellsTool(s.server)
+	tools.AddExcelDataValidationTool(s.server)
+	tools.AddExcelGoalSeekTool(s.server)
+	tools.AddExcelDataTableTool(s.server)
+	tools.AddExcelArrayLimiterTool(s.server)
 	tools.AddExcelCreateTableTool(s.server)
 	tools.AddExcelCopySheetTool(s.server)
+	// フェーズ1: 財務モデリング基盤機能
+	tools.AddExcelFinancialTemplateTool(s.server)
+	tools.AddExcelCircularReferenceTool(s.server)
+	tools.AddExcelModelValidationTool(s.server)
+	tools.AddExcelFinancialFormattingTool(s.server)
+	tools.AddExcelHistoricalAnalysisTool(s.server)
 	return s
 }
 

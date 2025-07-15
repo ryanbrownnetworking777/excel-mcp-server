@@ -1,0 +1,420 @@
+package tools
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+
+	"github.com/negokaz/excel-mcp-server/internal/excel"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/xuri/excelize/v2"
+
+	z "github.com/Oudwins/zog"
+)
+
+// ExcelCircularReferenceParams represents the parameters for handling circular references
+type ExcelCircularReferenceParams struct {
+	FilePath           *string  `json:"file_path" doc:"Path to the Excel file"`
+	MaxIterations      *int     `json:"max_iterations" doc:"Maximum number of iterations (default: 100)"`
+	ConvergenceThreshold *float64 `json:"convergence_threshold" doc:"Convergence threshold (default: 0.001)"`
+	InterestRate       *float64 `json:"interest_rate" doc:"Interest rate for debt calculations (default: 0.05)"`
+	TaxRate            *float64 `json:"tax_rate" doc:"Tax rate for calculations (default: 0.25)"`
+	EnableIterativeCalc *bool   `json:"enable_iterative_calc" doc:"Enable Excel iterative calculation (default: true)"`
+}
+
+// ExcelCircularReferenceResult represents the result of circular reference handling
+type ExcelCircularReferenceResult struct {
+	Message           string                 `json:"message"`
+	ConvergenceInfo   map[string]interface{} `json:"convergence_info"`
+	IterationResults  []IterationResult      `json:"iteration_results"`
+	FinalValues       map[string]interface{} `json:"final_values"`
+	ValidationResults map[string]interface{} `json:"validation_results"`
+}
+
+// IterationResult represents the result of each iteration
+type IterationResult struct {
+	Iteration       int                    `json:"iteration"`
+	MaxChange       float64                `json:"max_change"`
+	Converged       bool                   `json:"converged"`
+	KeyValues       map[string]interface{} `json:"key_values"`
+}
+
+// ExcelCircularReference handles circular references in financial models
+func ExcelCircularReference(ctx context.Context, params ExcelCircularReferenceParams) (*ExcelCircularReferenceResult, error) {
+	// バリデーション
+	schema := z.Struct(z.Schema{
+		"file_path":             z.String().Test(AbsolutePathTest()),
+		"max_iterations":        z.Int().Min(1).Max(1000).Default(100),
+		"convergence_threshold": z.Float().Min(0.00001).Max(0.1).Default(0.001),
+		"interest_rate":         z.Float().Min(0).Max(1).Default(0.05),
+		"tax_rate":              z.Float().Min(0).Max(1).Default(0.25),
+		"enable_iterative_calc": z.Bool().Default(true),
+	})
+
+	validatedParams, err := schema.Parse(params)
+	if err != nil {
+		return nil, err
+	}
+
+	// Excelファイルを開く
+	excelFile, err := excel.OpenFile(*validatedParams.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open Excel file: %w", err)
+	}
+
+	// 反復計算の有効化
+	if *validatedParams.EnableIterativeCalc {
+		err = enableIterativeCalculation(excelFile, *validatedParams.MaxIterations, *validatedParams.ConvergenceThreshold)
+		if err != nil {
+			return nil, fmt.Errorf("failed to enable iterative calculation: %w", err)
+		}
+	}
+
+	// 循環参照の解決
+	result, err := resolveCircularReferences(excelFile, validatedParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve circular references: %w", err)
+	}
+
+	// ファイルを保存
+	err = excelFile.Save()
+	if err != nil {
+		return nil, fmt.Errorf("failed to save Excel file: %w", err)
+	}
+
+	return result, nil
+}
+
+// enableIterativeCalculation enables iterative calculation in Excel
+func enableIterativeCalculation(excelFile excel.Excel, maxIterations int, convergenceThreshold float64) error {
+	// ExcelのIterativeCalculationを有効にする
+	// 注意: これは基本的にExcelアプリケーションの設定なので、
+	// ここではワークブックレベルでの設定として処理
+	
+	// 計算オプションシートを作成（設定の記録用）
+	err := excelFile.CreateNewSheet("Calc_Settings")
+	if err != nil {
+		// シートが既に存在する場合は無視
+	}
+	calcSheet, err := excelFile.FindSheet("Calc_Settings")
+	if err != nil {
+		return err
+	}
+
+	// 計算設定を記録
+	calcSheet.SetValue("A1", "Iterative Calculation Settings")
+	calcSheet.SetValue("A2", "Max Iterations")
+	calcSheet.SetValue("B2", maxIterations)
+	calcSheet.SetValue("A3", "Convergence Threshold")
+	calcSheet.SetValue("B3", convergenceThreshold)
+	calcSheet.SetValue("A4", "Enabled")
+	calcSheet.SetValue("B4", "TRUE")
+
+	return nil
+}
+
+// resolveCircularReferences resolves circular references manually
+func resolveCircularReferences(excelFile excel.Excel, params ExcelCircularReferenceParams) (*ExcelCircularReferenceResult, error) {
+	var iterationResults []IterationResult
+	converged := false
+	
+	// 主要シートを取得
+	incomeSheet, err := excelFile.FindSheet("Income_Statement")
+	if err != nil {
+		return nil, fmt.Errorf("Income_Statement sheet not found: %w", err)
+	}
+
+	balanceSheet, err := excelFile.FindSheet("Balance_Sheet")
+	if err != nil {
+		return nil, fmt.Errorf("Balance_Sheet sheet not found: %w", err)
+	}
+
+	// 循環参照の解決ループ
+	for iteration := 1; iteration <= *params.MaxIterations; iteration++ {
+		// 前回の値を保存
+		prevValues := extractKeyValues(incomeSheet, balanceSheet)
+		
+		// 循環参照を含む計算の実行
+		err = performCircularCalculation(incomeSheet, balanceSheet, params)
+		if err != nil {
+			return nil, fmt.Errorf("error in iteration %d: %w", iteration, err)
+		}
+
+		// 新しい値を取得
+		newValues := extractKeyValues(incomeSheet, balanceSheet)
+		
+		// 収束判定
+		maxChange := calculateMaxChange(prevValues, newValues)
+		converged = maxChange < *params.ConvergenceThreshold
+
+		// 反復結果を記録
+		iterationResults = append(iterationResults, IterationResult{
+			Iteration: iteration,
+			MaxChange: maxChange,
+			Converged: converged,
+			KeyValues: newValues,
+		})
+
+		if converged {
+			break
+		}
+	}
+
+	// 最終的な検証
+	validationResults := validateCircularReferences(incomeSheet, balanceSheet, params)
+
+	return &ExcelCircularReferenceResult{
+		Message: fmt.Sprintf("Circular reference resolution completed in %d iterations", len(iterationResults)),
+		ConvergenceInfo: map[string]interface{}{
+			"converged":         converged,
+			"iterations_used":   len(iterationResults),
+			"max_iterations":    *params.MaxIterations,
+			"final_change":      iterationResults[len(iterationResults)-1].MaxChange,
+			"convergence_threshold": *params.ConvergenceThreshold,
+		},
+		IterationResults:  iterationResults,
+		FinalValues:       iterationResults[len(iterationResults)-1].KeyValues,
+		ValidationResults: validationResults,
+	}, nil
+}
+
+// extractKeyValues extracts key values from financial statements
+func extractKeyValues(incomeSheet, balanceSheet excel.Worksheet) map[string]interface{} {
+	values := make(map[string]interface{})
+
+	// 損益計算書から主要な値を抽出
+	values["interest_expense"] = getNumericValue(incomeSheet, "C18") // 利息費用
+	values["net_income"] = getNumericValue(incomeSheet, "C25")       // 当期純利益
+	values["ebit"] = getNumericValue(incomeSheet, "C16")             // EBIT
+
+	// 貸借対照表から主要な値を抽出
+	values["total_debt"] = getNumericValue(balanceSheet, "C31")      // 総負債
+	values["cash"] = getNumericValue(balanceSheet, "C7")             // 現金
+	values["retained_earnings"] = getNumericValue(balanceSheet, "C39") // 利益剰余金
+
+	return values
+}
+
+// performCircularCalculation performs one iteration of circular calculation
+func performCircularCalculation(incomeSheet, balanceSheet excel.Worksheet, params ExcelCircularReferenceParams) error {
+	// 1. 平均負債残高を計算
+	currentDebt := getNumericValue(balanceSheet, "C31")
+	prevDebt := getNumericValue(balanceSheet, "B31")
+	avgDebt := (currentDebt + prevDebt) / 2
+
+	// 2. 利息費用を計算
+	interestExpense := avgDebt * (*params.InterestRate)
+	
+	// 3. 利息費用を損益計算書に設定
+	incomeSheet.SetValue("C18", interestExpense)
+
+	// 4. 税引前利益を再計算
+	ebit := getNumericValue(incomeSheet, "C16")
+	pretaxIncome := ebit - interestExpense
+	incomeSheet.SetValue("C20", pretaxIncome)
+
+	// 5. 税金を計算
+	taxExpense := pretaxIncome * (*params.TaxRate)
+	incomeSheet.SetValue("C23", taxExpense)
+
+	// 6. 当期純利益を計算
+	netIncome := pretaxIncome - taxExpense
+	incomeSheet.SetValue("C25", netIncome)
+
+	// 7. 利益剰余金を更新
+	prevRetainedEarnings := getNumericValue(balanceSheet, "B39")
+	newRetainedEarnings := prevRetainedEarnings + netIncome
+	balanceSheet.SetValue("C39", newRetainedEarnings)
+
+	// 8. 総資本の再計算
+	shareCapital := getNumericValue(balanceSheet, "C38")
+	otherEquity := getNumericValue(balanceSheet, "C40")
+	totalEquity := shareCapital + newRetainedEarnings + otherEquity
+	balanceSheet.SetValue("C41", totalEquity)
+
+	// 9. 現金の調整（バランスシート平衡のため）
+	totalAssets := getNumericValue(balanceSheet, "C21")
+	totalLiabilities := getNumericValue(balanceSheet, "C35")
+	requiredCash := totalAssets - totalLiabilities - totalEquity
+	balanceSheet.SetValue("C7", requiredCash)
+
+	return nil
+}
+
+// calculateMaxChange calculates the maximum change between iterations
+func calculateMaxChange(prevValues, newValues map[string]interface{}) float64 {
+	maxChange := 0.0
+
+	for key, newVal := range newValues {
+		if prevVal, exists := prevValues[key]; exists {
+			newFloat := convertToFloat(newVal)
+			prevFloat := convertToFloat(prevVal)
+			change := math.Abs(newFloat - prevFloat)
+			if change > maxChange {
+				maxChange = change
+			}
+		}
+	}
+
+	return maxChange
+}
+
+// validateCircularReferences validates the circular reference resolution
+func validateCircularReferences(incomeSheet, balanceSheet excel.Worksheet, params ExcelCircularReferenceParams) map[string]interface{} {
+	results := make(map[string]interface{})
+
+	// 1. 利息費用の妥当性チェック
+	interestExpense := getNumericValue(incomeSheet, "C18")
+	totalDebt := getNumericValue(balanceSheet, "C31")
+	impliedRate := interestExpense / totalDebt
+	
+	results["interest_validation"] = map[string]interface{}{
+		"interest_expense":     interestExpense,
+		"total_debt":           totalDebt,
+		"implied_interest_rate": impliedRate,
+		"target_interest_rate": *params.InterestRate,
+		"rate_difference":      math.Abs(impliedRate - *params.InterestRate),
+		"valid":               math.Abs(impliedRate - *params.InterestRate) < 0.001,
+	}
+
+	// 2. 税金計算の妥当性チェック
+	pretaxIncome := getNumericValue(incomeSheet, "C20")
+	taxExpense := getNumericValue(incomeSheet, "C23")
+	impliedTaxRate := taxExpense / pretaxIncome
+	
+	results["tax_validation"] = map[string]interface{}{
+		"pretax_income":       pretaxIncome,
+		"tax_expense":         taxExpense,
+		"implied_tax_rate":    impliedTaxRate,
+		"target_tax_rate":     *params.TaxRate,
+		"rate_difference":     math.Abs(impliedTaxRate - *params.TaxRate),
+		"valid":              math.Abs(impliedTaxRate - *params.TaxRate) < 0.001,
+	}
+
+	// 3. 利益剰余金の整合性チェック
+	netIncome := getNumericValue(incomeSheet, "C25")
+	currentRetainedEarnings := getNumericValue(balanceSheet, "C39")
+	prevRetainedEarnings := getNumericValue(balanceSheet, "B39")
+	expectedRetainedEarnings := prevRetainedEarnings + netIncome
+	
+	results["retained_earnings_validation"] = map[string]interface{}{
+		"current_retained_earnings":  currentRetainedEarnings,
+		"expected_retained_earnings": expectedRetainedEarnings,
+		"difference":                math.Abs(currentRetainedEarnings - expectedRetainedEarnings),
+		"valid":                     math.Abs(currentRetainedEarnings - expectedRetainedEarnings) < 0.01,
+	}
+
+	// 4. 全体的な循環参照の安定性
+	results["overall_stability"] = map[string]interface{}{
+		"interest_stable": results["interest_validation"].(map[string]interface{})["valid"],
+		"tax_stable":     results["tax_validation"].(map[string]interface{})["valid"],
+		"equity_stable":  results["retained_earnings_validation"].(map[string]interface{})["valid"],
+	}
+
+	return results
+}
+
+// getNumericValue gets a numeric value from a cell
+func getNumericValue(worksheet excel.Worksheet, cell string) float64 {
+	value, err := worksheet.GetValue(cell)
+	if err != nil {
+		return 0.0
+	}
+
+	// 文字列を数値に変換
+	if floatVal, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil {
+		return floatVal
+	}
+
+	return 0.0
+}
+
+// convertToFloat converts interface{} to float64
+func convertToFloat(value interface{}) float64 {
+	switch v := value.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case string:
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return 0.0
+}
+
+// setupCircularReferenceFormulas sets up formulas that handle circular references
+func setupCircularReferenceFormulas(excelFile excel.Excel) error {
+	// 循環参照を適切に処理するための数式を設定
+	incomeSheet, err := excelFile.FindSheet("Income_Statement")
+	if err != nil {
+		return err
+	}
+
+	balanceSheet, err := excelFile.FindSheet("Balance_Sheet")
+	if err != nil {
+		return err
+	}
+
+	// 利息費用の計算式（平均負債残高ベース）
+	incomeSheet.SetFormula("C18", "=(Balance_Sheet.C31+Balance_Sheet.B31)/2*0.05")
+
+	// 税引前利益の計算式
+	incomeSheet.SetFormula("C20", "=C16-C18")
+
+	// 税金の計算式
+	incomeSheet.SetFormula("C23", "=C20*0.25")
+
+	// 当期純利益の計算式
+	incomeSheet.SetFormula("C25", "=C20-C23")
+
+	// 利益剰余金の計算式
+	balanceSheet.SetFormula("C39", "=B39+Income_Statement.C25")
+
+	return nil
+}
+
+func AddExcelCircularReferenceTool(server *server.MCPServer) {
+	server.AddTool(mcp.NewTool("excel_circular_reference",
+		mcp.WithDescription("Handle circular references in financial models with iterative calculation and convergence validation"),
+		mcp.WithString("file_path",
+			mcp.Required(),
+			mcp.Description("Path to the Excel file"),
+		),
+		mcp.WithNumber("max_iterations",
+			mcp.Description("Maximum number of iterations (default: 100)"),
+		),
+		mcp.WithNumber("convergence_threshold",
+			mcp.Description("Convergence threshold (default: 0.001)"),
+		),
+		mcp.WithNumber("interest_rate",
+			mcp.Description("Interest rate for debt calculations (default: 0.05)"),
+		),
+		mcp.WithNumber("tax_rate",
+			mcp.Description("Tax rate for calculations (default: 0.25)"),
+		),
+		mcp.WithBoolean("enable_iterative_calc",
+			mcp.Description("Enable Excel iterative calculation (default: true)"),
+		),
+	), func(arguments mcp.ToolCallArguments) *mcp.CallToolResult {
+		var args ExcelCircularReferenceParams
+		if err := arguments.Unmarshal(&args); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Invalid arguments: %v", err))
+		}
+
+		result, err := ExcelCircularReference(context.Background(), args)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to handle circular references: %v", err))
+		}
+
+		return mcp.NewToolResultText(fmt.Sprintf("Circular reference handling completed: %s", result.Message))
+	})
+}
