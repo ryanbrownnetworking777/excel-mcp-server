@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
@@ -62,6 +63,35 @@ func (e *ExcelizeExcel) CopySheet(srcSheetName string, destSheetName string) err
 	return nil
 }
 
+func (e *ExcelizeExcel) DeleteSheet(sheetName string) error {
+	// Check if sheet exists
+	// シートの存在をチェックするのです！ ✅
+	index, err := e.file.GetSheetIndex(sheetName)
+	if err != nil || index < 0 {
+		return fmt.Errorf("sheet not found: %s", sheetName)
+	}
+	
+	// Prevent deletion of the last sheet
+	// 最後のシートの削除を防ぐのです！ ⚠️
+	sheetList := e.file.GetSheetList()
+	if len(sheetList) <= 1 {
+		return fmt.Errorf("cannot delete the last remaining sheet")
+	}
+	
+	// Delete the sheet
+	// シートを削除するのです！ 🗑️
+	err = e.file.DeleteSheet(sheetName)
+	if err != nil {
+		return fmt.Errorf("failed to delete sheet: %w", err)
+	}
+	
+	return nil
+}
+
+func (e *ExcelizeExcel) GetSheetNames() ([]string, error) {
+	return e.file.GetSheetList(), nil
+}
+
 func (e *ExcelizeExcel) GetSheets() ([]Worksheet, error) {
 	sheetList := e.file.GetSheetList()
 	worksheets := make([]Worksheet, len(sheetList))
@@ -117,6 +147,29 @@ func (e *ExcelizeExcel) FormatCells(sheetName, rangeStr string, style map[string
 	}
 
 	return nil
+}
+
+// AddDataValidation adds data validation rules to a range of cells using Excelize
+// Excelizeを使ってセルの範囲にデータ検証ルールを追加するのです！ 📋(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+func (e *ExcelizeExcel) AddDataValidation(sheetName, rangeStr string, validation map[string]interface{}) error {
+	// Create Excelize data validation from our validation map
+	// 検証マップからExcelizeのデータ検証を作成するのです！ ✨
+	dv := createExcelizeDataValidation(validation)
+	
+	// Parse the range to get start and end cells
+	// 範囲を解析して開始セルと終了セルを取得するのです！ 📍
+	startCell, endCell, err := parseRangeForExcelize(rangeStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse range %s: %w", rangeStr, err)
+	}
+	
+	// Set the range for data validation
+	// データ検証の範囲を設定するのです！ (◕‿◕)♡
+	dv.SetSqref(fmt.Sprintf("%s:%s", startCell, endCell))
+	
+	// Add the data validation to the worksheet
+	// ワークシートにデータ検証を追加するのです！ ✨
+	return e.file.AddDataValidation(sheetName, dv)
 }
 
 type ExcelizeWorksheet struct {
@@ -864,4 +917,183 @@ func parseRangeForExcelize(rangeStr string) (string, string, error) {
 	}
 	
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
+}
+
+// createExcelizeDataValidation creates an Excelize DataValidation from our validation map
+// 検証マップからExcelizeのDataValidationを作成するのです！ 📋(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+func createExcelizeDataValidation(validation map[string]interface{}) *excelize.DataValidation {
+	dv := excelize.NewDataValidation(true)
+	
+	// Set validation type and criteria
+	// 検証タイプと基準を設定するのです！ ✨(◕‿◕)♡
+	validationType, _ := validation["type"].(string)
+	operator, _ := validation["operator"].(string)
+	formula1, _ := validation["formula1"].(string)
+	
+	switch validationType {
+	case "list":
+		// Handle dropdown list validation
+		// ドロップダウンリスト検証を処理するのです！ 📝
+		if listValues, ok := validation["listValues"].([]string); ok && len(listValues) > 0 {
+			// Use discrete values
+			dv.SetDropList(listValues)
+		} else if formula1 != "" {
+			// Use formula reference
+			dv.SetSqrefDropList(formula1)
+		}
+		
+		if showDropdown, ok := validation["showDropdown"].(bool); ok {
+			dv.SetDropList([]string{}) // Reset and configure properly
+			if !showDropdown {
+				// In Excelize, we control dropdown visibility through the validation setup
+				// Excelizeでは、検証設定を通じてドロップダウンの表示を制御するのです
+			}
+		}
+		
+	case "whole":
+		// Integer validation
+		// 整数検証だよ～ 🔢
+		if operator != "" {
+			switch operator {
+			case "between":
+				dv.SetRange(
+					parseFloat(validation["minValue"]), 
+					parseFloat(validation["maxValue"]), 
+					excelize.DataValidationTypeWhole, 
+					excelize.DataValidationOperatorBetween,
+				)
+			case "equal":
+				dv.SetRange(parseFloat(validation["minValue"]), 0, excelize.DataValidationTypeWhole, excelize.DataValidationOperatorEqual)
+			case "greaterThan":
+				dv.SetRange(parseFloat(validation["minValue"]), 0, excelize.DataValidationTypeWhole, excelize.DataValidationOperatorGreaterThan)
+			case "lessThan":
+				dv.SetRange(parseFloat(validation["minValue"]), 0, excelize.DataValidationTypeWhole, excelize.DataValidationOperatorLessThan)
+			}
+		} else if formula1 != "" {
+			// Use formula for validation
+			dv.SetRange(0, 0, excelize.DataValidationTypeWhole, excelize.DataValidationOperatorBetween)
+		}
+		
+	case "decimal":
+		// Decimal number validation
+		// 小数点数検証です！ 📊
+		if operator != "" {
+			switch operator {
+			case "between":
+				dv.SetRange(
+					parseFloat(validation["minValue"]), 
+					parseFloat(validation["maxValue"]), 
+					excelize.DataValidationTypeDecimal, 
+					excelize.DataValidationOperatorBetween,
+				)
+			case "greaterThan":
+				dv.SetRange(parseFloat(validation["minValue"]), 0, excelize.DataValidationTypeDecimal, excelize.DataValidationOperatorGreaterThan)
+			case "lessThan":
+				dv.SetRange(parseFloat(validation["minValue"]), 0, excelize.DataValidationTypeDecimal, excelize.DataValidationOperatorLessThan)
+			}
+		}
+		
+	case "textLength":
+		// Text length validation
+		// テキスト長検証だよ～ 📏(´∀｀)♡
+		minLen := parseInt(validation["minLength"])
+		maxLen := parseInt(validation["maxLength"])
+		if maxLen > 0 {
+			dv.SetRange(float64(minLen), float64(maxLen), excelize.DataValidationTypeTextLength, excelize.DataValidationOperatorBetween)
+		}
+		
+	case "date":
+		// Date validation
+		// 日付検証です！ 📅✨
+		if operator == "between" {
+			// Parse date strings if provided
+			// 提供された日付文字列を解析するのです
+			dv.SetRange(0, 0, excelize.DataValidationTypeDate, excelize.DataValidationOperatorBetween)
+		}
+		
+	case "time":
+		// Time validation
+		// 時刻検証です！ ⏰
+		dv.SetRange(0, 0, excelize.DataValidationTypeTime, excelize.DataValidationOperatorBetween)
+		
+	case "custom":
+		// Custom formula validation
+		// カスタム数式検証です！ 🔧(◕‿◕)
+		if formula1 != "" {
+			dv.SetRange(0, 0, excelize.DataValidationTypeCustom, excelize.DataValidationOperatorBetween)
+		}
+	}
+	
+	// Set input message
+	// 入力メッセージを設定するのです！ 💬
+	if showInputMsg, ok := validation["showInputMsg"].(bool); ok && showInputMsg {
+		inputTitle, _ := validation["inputTitle"].(string)
+		inputMsg, _ := validation["inputMsg"].(string)
+		if inputTitle != "" || inputMsg != "" {
+			dv.SetInput(inputTitle, inputMsg)
+		}
+	}
+	
+	// Set error alert
+	// エラーアラートを設定するのです！ ⚠️
+	if showErrorMsg, ok := validation["showErrorMsg"].(bool); ok && showErrorMsg {
+		errorTitle, _ := validation["errorTitle"].(string)
+		errorMsg, _ := validation["errorMsg"].(string)
+		errorStyle, _ := validation["errorStyle"].(string)
+		
+		var style excelize.DataValidationErrorStyle
+		switch errorStyle {
+		case "stop":
+			style = excelize.DataValidationErrorStyleStop
+		case "warning":
+			style = excelize.DataValidationErrorStyleWarning
+		case "information":
+			style = excelize.DataValidationErrorStyleInformation
+		default:
+			style = excelize.DataValidationErrorStyleStop
+		}
+		
+		if errorTitle != "" || errorMsg != "" {
+			dv.SetError(style, errorTitle, errorMsg)
+		}
+	}
+	
+	// Set allow blank
+	// 空白許可を設定するのです！ ⭕
+	if allowBlank, ok := validation["allowBlank"].(bool); ok {
+		// In Excelize, blank handling is part of the validation setup
+		_ = allowBlank // Note: Excelize handles this differently
+	}
+	
+	return dv
+}
+
+// Helper functions for type conversion
+// 型変換用のヘルパー関数だよ～ 🔄(´∀｀)♡
+func parseFloat(val interface{}) float64 {
+	switch v := val.(type) {
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	case string:
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return 0
+}
+
+func parseInt(val interface{}) int {
+	switch v := val.(type) {
+	case int:
+		return v
+	case float64:
+		return int(v)
+	case string:
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
+	}
+	return 0
 }

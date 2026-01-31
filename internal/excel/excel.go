@@ -18,11 +18,18 @@ type Excel interface {
 	CreateNewSheet(sheetName string) error
 	// CopySheet copies a sheet from one to another.
 	CopySheet(srcSheetName, destSheetName string) error
+	// DeleteSheet deletes a sheet by name.
+	DeleteSheet(sheetName string) error
+	// GetSheetNames returns names of all sheets in the workbook.
+	GetSheetNames() ([]string, error)
 	// Save saves the Excel file.
 	Save() error
 	// FormatCells applies formatting to a range of cells
 	// セルの範囲にフォーマットを適用するのです！ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
 	FormatCells(sheetName, rangeStr string, style map[string]interface{}) error
+	// AddDataValidation adds data validation rules to a range of cells
+	// セルの範囲にデータ検証ルールを追加するのです！ 📋(◕‿◕)♡
+	AddDataValidation(sheetName, rangeStr string, validation map[string]interface{}) error
 }
 
 type Worksheet interface {

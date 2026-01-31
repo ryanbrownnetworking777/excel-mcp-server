@@ -40,6 +40,12 @@ func NormalizeRange(rangeStr string) string {
 	return fmt.Sprintf("%s:%s", startCell, endCell)
 }
 
+// CoordinatesToCellName converts column and row coordinates to Excel cell name
+// 列と行の座標をExcelセル名に変換するのです！ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+func CoordinatesToCellName(col, row int) (string, error) {
+	return excelize.CoordinatesToCellName(col, row)
+}
+
 // FileIsNotReadable checks if a file is not writable
 func FileIsNotWritable(absolutePath string) bool {
 	f, err := os.OpenFile(path.Clean(absolutePath), os.O_WRONLY, os.ModePerm)

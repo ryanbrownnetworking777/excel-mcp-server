@@ -242,6 +242,53 @@ func (o *OleExcel) CopySheet(srcSheetName string, dstSheetName string) error {
 	return nil
 }
 
+func (o *OleExcel) DeleteSheet(sheetName string) error {
+	worksheets := oleutil.MustGetProperty(o.workbook, "Worksheets").ToIDispatch()
+	defer worksheets.Release()
+
+	// Check if there's more than one sheet
+	// 複数のシートがあるかチェックするのです！ ⚠️
+	count := int(oleutil.MustGetProperty(worksheets, "Count").Val)
+	if count <= 1 {
+		return fmt.Errorf("cannot delete the last remaining sheet")
+	}
+
+	// Get the sheet to delete
+	// 削除するシートを取得するのです！ 🗑️
+	sheetVariant, err := oleutil.GetProperty(worksheets, "Item", sheetName)
+	if err != nil {
+		return fmt.Errorf("sheet not found: %s", sheetName)
+	}
+	sheet := sheetVariant.ToIDispatch()
+	defer sheet.Release()
+
+	// Delete the sheet
+	// シートを削除するのです！ 💥
+	_, err = oleutil.CallMethod(sheet, "Delete")
+	if err != nil {
+		return fmt.Errorf("failed to delete sheet: %w", err)
+	}
+
+	return nil
+}
+
+func (o *OleExcel) GetSheetNames() ([]string, error) {
+	worksheets := oleutil.MustGetProperty(o.workbook, "Worksheets").ToIDispatch()
+	defer worksheets.Release()
+
+	count := int(oleutil.MustGetProperty(worksheets, "Count").Val)
+	sheetNames := make([]string, count)
+
+	for i := 1; i <= count; i++ {
+		sheet := oleutil.MustGetProperty(worksheets, "Item", i).ToIDispatch()
+		name := oleutil.MustGetProperty(sheet, "Name").ToString()
+		sheetNames[i-1] = name
+		sheet.Release()
+	}
+
+	return sheetNames, nil
+}
+
 func (o *OleExcel) Save() error {
 	_, err := oleutil.CallMethod(o.workbook, "Save")
 	if err != nil {
@@ -258,6 +305,16 @@ func (o *OleExcel) FormatCells(sheetName, rangeStr string, style map[string]inte
 	// For now, return a not implemented error
 	// とりあえず未実装エラーを返すのです (>_<)
 	return fmt.Errorf("OLE formatting not yet implemented - use Excelize backend for formatting")
+}
+
+// AddDataValidation applies data validation to a range of cells using OLE automation
+// OLE自動化を使ってセルの範囲にデータ検証を適用するのです！ 📋(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+func (o *OleExcel) AddDataValidation(sheetName, rangeStr string, validation map[string]interface{}) error {
+	// OLE data validation implementation can be added here for advanced Excel integration
+	// より高度なExcel統合のためのOLEデータ検証実装をここに追加できるのです！ ✨
+	// For now, return a not implemented error
+	// とりあえず未実装エラーを返すのです (>_<)
+	return fmt.Errorf("OLE data validation not yet implemented - use Excelize backend for data validation")
 }
 
 func (o *OleWorksheet) Release() {
