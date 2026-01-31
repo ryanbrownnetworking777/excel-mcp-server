@@ -1,0 +1,283 @@
+package tools
+
+import (
+	"context"
+	"fmt"
+
+	z "github.com/Oudwins/zog"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/negokaz/excel-mcp-server/internal/excel"
+	imcp "github.com/negokaz/excel-mcp-server/internal/mcp"
+)
+
+// ExcelDeleteSheetArguments defines the structure for Excel sheet deletion
+// Excelシート削除の構造体だよ～ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+type ExcelDeleteSheetArguments struct {
+	FileAbsolutePath string `zog:"fileAbsolutePath"`
+	SheetName        string `zog:"sheetName"`
+	ConfirmDelete    bool   `zog:"confirmDelete"`
+}
+
+// DeleteSheetResult represents the result of sheet deletion
+// シート削除結果を表すのです！ 📊(◕‿◕)♡
+type DeleteSheetResult struct {
+	Success         bool     `json:"success"`
+	FilePath        string   `json:"filePath"`
+	SheetName       string   `json:"sheetName"`
+	ErrorMessage    string   `json:"errorMessage,omitempty"`
+	SheetExisted    bool     `json:"sheetExisted"`
+	RemainingSheets []string `json:"remainingSheets"`
+	TotalSheets     int      `json:"totalSheets"`
+}
+
+var excelDeleteSheetArgumentsSchema = z.Struct(z.Schema{
+	"fileAbsolutePath": z.String().Test(AbsolutePathTest()).Required(),
+	"sheetName":        z.String().Required(),
+	"confirmDelete":    z.Bool().Required(),
+})
+
+func AddExcelDeleteSheetTool(server *server.MCPServer) {
+	server.AddTool(mcp.NewTool("excel_delete_sheet",
+		mcp.WithDescription("Delete a specific sheet from an Excel workbook"),
+		mcp.WithString("fileAbsolutePath",
+			mcp.Required(),
+			mcp.Description("Absolute path to the Excel file"),
+		),
+		mcp.WithString("sheetName",
+			mcp.Required(),
+			mcp.Description("Name of the sheet to delete"),
+		),
+		mcp.WithBoolean("confirmDelete",
+			mcp.Required(),
+			mcp.Description("Confirmation flag - must be true to proceed with sheet deletion"),
+		),
+	), handleDeleteSheet)
+}
+
+func handleDeleteSheet(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := ExcelDeleteSheetArguments{}
+	issues := excelDeleteSheetArgumentsSchema.Parse(request.Params.Arguments, &args)
+	if len(issues) != 0 {
+		return imcp.NewToolResultZogIssueMap(issues), nil
+	}
+
+	// Safety check - require explicit confirmation
+	// 安全チェック - 明示的な確認が必要なのです！ ⚠️
+	if !args.ConfirmDelete {
+		return imcp.NewToolResultInvalidArgumentError("confirmDelete must be true to proceed with sheet deletion"), nil
+	}
+
+	return deleteExcelSheet(args.FileAbsolutePath, args.SheetName)
+}
+
+func deleteExcelSheet(fileAbsolutePath string, sheetName string) (*mcp.CallToolResult, error) {
+	result := &DeleteSheetResult{
+		FilePath:     fileAbsolutePath,
+		SheetName:    sheetName,
+		Success:      false,
+		SheetExisted: false,
+	}
+
+	// Open workbook
+	// ワークブックを開くのです！ 📂
+	workbook, closeFn, err := excel.OpenFile(fileAbsolutePath)
+	if err != nil {
+		result.ErrorMessage = fmt.Sprintf("Failed to open file: %v", err)
+		html := generateDeleteSheetHTML(result)
+		return mcp.NewToolResultText(html), nil
+	}
+	defer closeFn()
+
+	// Get list of all sheets before deletion
+	// 削除前の全シートリストを取得するのです！ 📋
+	allSheets, err := workbook.GetSheetNames()
+	if err != nil {
+		result.ErrorMessage = fmt.Sprintf("Failed to get sheet names: %v", err)
+		html := generateDeleteSheetHTML(result)
+		return mcp.NewToolResultText(html), nil
+	}
+
+	result.TotalSheets = len(allSheets)
+
+	// Check if sheet exists
+	// シートの存在をチェックするのです！ ✅
+	sheetExists := false
+	for _, sheet := range allSheets {
+		if sheet == sheetName {
+			sheetExists = true
+			break
+		}
+	}
+
+	if !sheetExists {
+		result.ErrorMessage = fmt.Sprintf("Sheet '%s' does not exist", sheetName)
+		result.RemainingSheets = allSheets
+		html := generateDeleteSheetHTML(result)
+		return mcp.NewToolResultText(html), nil
+	}
+
+	result.SheetExisted = true
+
+	// Safety check - prevent deletion of the last sheet
+	// 安全チェック - 最後のシートの削除を防ぐのです！ ⚠️
+	if len(allSheets) == 1 {
+		result.ErrorMessage = "Cannot delete the last remaining sheet in the workbook"
+		result.RemainingSheets = allSheets
+		html := generateDeleteSheetHTML(result)
+		return mcp.NewToolResultText(html), nil
+	}
+
+	// Perform sheet deletion
+	// シート削除を実行するのです！ 🗑️
+	err = workbook.DeleteSheet(sheetName)
+	if err != nil {
+		result.ErrorMessage = fmt.Sprintf("Failed to delete sheet: %v", err)
+		result.RemainingSheets = allSheets
+		html := generateDeleteSheetHTML(result)
+		return mcp.NewToolResultText(html), nil
+	}
+
+	// Save the workbook
+	// ワークブックを保存するのです！ 💾
+	if err := workbook.Save(); err != nil {
+		result.ErrorMessage = fmt.Sprintf("Failed to save workbook after sheet deletion: %v", err)
+		result.RemainingSheets = allSheets
+		html := generateDeleteSheetHTML(result)
+		return mcp.NewToolResultText(html), nil
+	}
+
+	// Get updated sheet list
+	// 更新されたシートリストを取得するのです！ 📊
+	updatedSheets, err := workbook.GetSheetNames()
+	if err == nil {
+		result.RemainingSheets = updatedSheets
+		result.TotalSheets = len(updatedSheets)
+	} else {
+		// Remove the deleted sheet from the original list as fallback
+		// フォールバックとして元のリストから削除したシートを除去 🔄
+		for i, sheet := range allSheets {
+			if sheet == sheetName {
+				result.RemainingSheets = append(allSheets[:i], allSheets[i+1:]...)
+				break
+			}
+		}
+		result.TotalSheets = len(result.RemainingSheets)
+	}
+
+	result.Success = true
+
+	// Generate response HTML
+	// レスポンスHTMLを生成するのです！ 📄
+	html := generateDeleteSheetHTML(result)
+	return mcp.NewToolResultText(html), nil
+}
+
+// generateDeleteSheetHTML generates HTML response for sheet deletion results
+// シート削除結果のHTMLレスポンスを生成するのです！ 🎨
+func generateDeleteSheetHTML(result *DeleteSheetResult) string {
+	html := "<h2>📊 Excel Sheet Deletion</h2>\n"
+	html += fmt.Sprintf("<p><strong>File:</strong> %s</p>\n", result.FilePath)
+	html += fmt.Sprintf("<p><strong>Sheet:</strong> %s</p>\n", result.SheetName)
+
+	// Status section with color coding
+	// 色分けされたステータスセクション 🎨
+	statusColor := "#dc3545" // Red for failure
+	statusIcon := "❌"
+	statusText := "FAILED"
+
+	if result.Success {
+		statusColor = "#28a745" // Green for success
+		statusIcon = "✅"
+		statusText = "SUCCESS"
+	} else if !result.SheetExisted {
+		statusColor = "#ffc107" // Yellow for not found
+		statusIcon = "⚠️"
+		statusText = "NOT FOUND"
+	}
+
+	html += fmt.Sprintf("<h3>Status: <span style='color: %s;'>%s %s</span></h3>\n",
+		statusColor, statusIcon, statusText)
+
+	// Sheet information table
+	// シート情報テーブル 📊
+	html += "<div style='background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 15px; margin: 10px 0;'>\n"
+	html += "<table style='border-collapse: collapse; width: 100%;'>\n"
+	html += "<tr style='background-color: #e9ecef;'>\n"
+	html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: left;'>Property</th>\n"
+	html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: left;'>Value</th>\n"
+	html += "</tr>\n"
+
+	// Sheet existed status
+	existedIcon := "❌"
+	if result.SheetExisted {
+		existedIcon = "✅"
+	}
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Sheet Existed</td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px;'>%s %v</td>\n", existedIcon, result.SheetExisted)
+	html += "</tr>\n"
+
+	// Total sheets count
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Remaining Sheets</td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px;'>%d</td>\n", result.TotalSheets)
+	html += "</tr>\n"
+
+	// Error message
+	if result.ErrorMessage != "" {
+		html += "<tr>\n"
+		html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Error</td>\n"
+		html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; color: #dc3545;'>%s</td>\n", result.ErrorMessage)
+		html += "</tr>\n"
+	}
+
+	html += "</table>\n"
+	html += "</div>\n"
+
+	// Remaining sheets list
+	// 残りのシートリスト 📋
+	if len(result.RemainingSheets) > 0 {
+		html += "<h3>📋 Remaining Sheets:</h3>\n"
+		html += "<ul>\n"
+		for i, sheet := range result.RemainingSheets {
+			html += fmt.Sprintf("<li><strong>%d.</strong> %s</li>\n", i+1, sheet)
+		}
+		html += "</ul>\n"
+	}
+
+	// Results summary
+	// 結果サマリー 💡
+	html += "<h3>💡 Summary:</h3>\n"
+	html += "<ul>\n"
+
+	if result.Success {
+		html += fmt.Sprintf("<li>✅ Sheet '%s' successfully deleted</li>\n", result.SheetName)
+		html += fmt.Sprintf("<li>📊 %d sheets remaining in workbook</li>\n", result.TotalSheets)
+		html += "<li>💾 Workbook saved with changes</li>\n"
+	} else if !result.SheetExisted {
+		html += fmt.Sprintf("<li>⚠️ Sheet '%s' was not found in the workbook</li>\n", result.SheetName)
+		html += "<li>📁 No deletion was performed</li>\n"
+	} else {
+		html += fmt.Sprintf("<li>❌ Failed to delete sheet '%s'</li>\n", result.SheetName)
+		html += fmt.Sprintf("<li>🔍 Reason: %s</li>\n", result.ErrorMessage)
+		html += "<li>💡 Check workbook and try again</li>\n"
+	}
+
+	html += "</ul>\n"
+
+	// Safety notes
+	// 安全性の注記 ⚠️
+	if result.Success {
+		html += "<div style='background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 10px 0;'>\n"
+		html += "<h4>⚠️ Important Notes:</h4>\n"
+		html += "<ul>\n"
+		html += "<li>🗑️ Sheet and all its data have been permanently deleted</li>\n"
+		html += "<li>🔄 This action cannot be undone</li>\n"
+		html += "<li>💾 Make sure to backup your workbook before major deletions</li>\n"
+		html += "</ul>\n"
+		html += "</div>\n"
+	}
+
+	return html
+}

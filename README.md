@@ -2,6 +2,10 @@
 
 <img src="https://github.com/negokaz/excel-mcp-server/blob/main/docs/img/icon-800.png?raw=true" width="128">
 
+<a href="https://glama.ai/mcp/servers/@negokaz/excel-mcp-server">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@negokaz/excel-mcp-server/badge" alt="Excel Server MCP server" />
+</a>
+
 [![NPM Version](https://img.shields.io/npm/v/@negokaz/excel-mcp-server)](https://www.npmjs.com/package/@negokaz/excel-mcp-server)
 [![smithery badge](https://smithery.ai/badge/@negokaz/excel-mcp-server)](https://smithery.ai/server/@negokaz/excel-mcp-server)
 
@@ -95,10 +99,10 @@ Read values from Excel sheet with pagination.
     - Sheet name in the Excel file
 - `range`
     - Range of cells to read in the Excel sheet (e.g., "A1:C10"). [default: first paging range]
-- `knownPagingRanges`
-    - List of already read paging ranges
 - `showFormula`
-    - Show formula instead of value
+    - Show formula instead of value [default: false]
+- `showStyle`
+    - Show style information for cells [default: false]
 
 ### `excel_screen_capture`
 
@@ -111,8 +115,6 @@ Read values from Excel sheet with pagination.
     - Sheet name in the Excel file
 - `range`
     - Range of cells to read in the Excel sheet (e.g., "A1:C10"). [default: first paging range]
-- `knownPagingRanges`
-    - List of already read paging ranges
 
 ### `excel_write_to_sheet`
 
@@ -155,6 +157,26 @@ Copy existing sheet to a new sheet
     - Source sheet name in the Excel file
 - `dstSheetName`
     - Sheet name to be copied
+
+### `excel_format_range`
+
+Format cells in the Excel sheet with style information
+
+**Arguments:**
+- `fileAbsolutePath`
+    - Absolute path to the Excel file
+- `sheetName`
+    - Sheet name in the Excel file
+- `range`
+    - Range of cells in the Excel sheet (e.g., "A1:C3")
+- `styles`
+    - 2D array of style objects for each cell. If a cell does not change style, use null. The number of items of the array must match the range size.
+    - Style object properties:
+        - `border`: Array of border styles (type, color, style)
+        - `font`: Font styling (bold, italic, underline, size, strike, color, vertAlign)
+        - `fill`: Fill/background styling (type, pattern, color, shading)
+        - `numFmt`: Custom number format string
+        - `decimalPlaces`: Number of decimal places (0-30)
 
 <h2 id="configuration">Configuration</h2>
 

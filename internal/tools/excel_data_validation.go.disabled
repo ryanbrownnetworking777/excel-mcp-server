@@ -1,0 +1,387 @@
+package tools
+
+import (
+	"context"
+	"fmt"
+
+	z "github.com/Oudwins/zog"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/negokaz/excel-mcp-server/internal/excel"
+	imcp "github.com/negokaz/excel-mcp-server/internal/mcp"
+)
+
+// ExcelDataValidationArguments defines the structure for Excel data validation
+// Excelデータ検証の構造体だよ～ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+type ExcelDataValidationArguments struct {
+	FileAbsolutePath string `zog:"fileAbsolutePath"`
+	SheetName        string `zog:"sheetName"`
+	Range            string `zog:"range"`
+	// Validation options handled manually for flexibility
+}
+
+// DataValidation represents data validation rules for cells
+// セルのデータ検証ルールを表すのです！ (◕‿◕)♡
+type DataValidation struct {
+	Type            string   `json:"type"`                      // "list", "whole", "decimal", "date", "time", "textLength", "custom"
+	Operator        string   `json:"operator,omitempty"`        // "between", "equal", "notEqual", "greaterThan", "lessThan", etc.
+	Formula1        string   `json:"formula1,omitempty"`        // First value/formula
+	Formula2        string   `json:"formula2,omitempty"`        // Second value (for between)
+	ShowDropdown    bool     `json:"showDropdown,omitempty"`    // Show dropdown for list
+	ShowInputMsg    bool     `json:"showInputMsg,omitempty"`    // Show input message
+	ShowErrorMsg    bool     `json:"showErrorMsg,omitempty"`    // Show error message
+	InputTitle      string   `json:"inputTitle,omitempty"`      // Input message title
+	InputMsg        string   `json:"inputMsg,omitempty"`        // Input message body
+	ErrorTitle      string   `json:"errorTitle,omitempty"`      // Error message title
+	ErrorMsg        string   `json:"errorMsg,omitempty"`        // Error message body
+	ErrorStyle      string   `json:"errorStyle,omitempty"`      // "stop", "warning", "information"
+	AllowBlank      bool     `json:"allowBlank,omitempty"`      // Allow blank cells
+	ListValues      []string `json:"listValues,omitempty"`      // Values for dropdown list
+	MinValue        float64  `json:"minValue,omitempty"`        // Minimum value
+	MaxValue        float64  `json:"maxValue,omitempty"`        // Maximum value
+	MinLength       int      `json:"minLength,omitempty"`       // Minimum text length
+	MaxLength       int      `json:"maxLength,omitempty"`       // Maximum text length
+}
+
+var excelDataValidationArgumentsSchema = z.Struct(z.Schema{
+	"fileAbsolutePath": z.String().Test(AbsolutePathTest()).Required(),
+	"sheetName":        z.String().Required(),
+	"range":            z.String().Required(),
+	// validation options handled manually for flexibility
+})
+
+func AddExcelDataValidationTool(server *server.MCPServer) {
+	server.AddTool(mcp.NewTool("excel_data_validation",
+		mcp.WithDescription("Set data validation rules for Excel cells including dropdowns, number ranges, dates, and custom formulas"),
+		mcp.WithString("fileAbsolutePath",
+			mcp.Required(),
+			mcp.Description("Absolute path to the Excel file"),
+		),
+		mcp.WithString("sheetName",
+			mcp.Required(),
+			mcp.Description("Sheet name in the Excel file"),
+		),
+		mcp.WithString("range",
+			mcp.Required(),
+			mcp.Description("Range of cells to apply validation (e.g., \"A1:A10\" or \"B2\")"),
+		),
+		mcp.WithObject("validation",
+			mcp.Required(),
+			mcp.Description("Data validation rules to apply"),
+			mcp.Properties(map[string]any{
+				"type": map[string]any{
+					"type":        "string",
+					"enum":        []string{"list", "whole", "decimal", "date", "time", "textLength", "custom"},
+					"description": "Type of validation to apply",
+				},
+				"operator": map[string]any{
+					"type":        "string",
+					"enum":        []string{"between", "equal", "notEqual", "greaterThan", "lessThan", "greaterThanOrEqual", "lessThanOrEqual"},
+					"description": "Comparison operator for validation",
+				},
+				"formula1": map[string]any{
+					"type":        "string",
+					"description": "First formula or value for validation (e.g., \"=A1:A10\" for list source)",
+				},
+				"formula2": map[string]any{
+					"type":        "string",
+					"description": "Second formula or value (used with 'between' operator)",
+				},
+				"showDropdown": map[string]any{
+					"type":        "boolean",
+					"description": "Show dropdown arrow for list validation",
+				},
+				"showInputMsg": map[string]any{
+					"type":        "boolean",
+					"description": "Show input message when cell is selected",
+				},
+				"showErrorMsg": map[string]any{
+					"type":        "boolean",
+					"description": "Show error message for invalid input",
+				},
+				"inputTitle": map[string]any{
+					"type":        "string",
+					"description": "Title for input message",
+				},
+				"inputMsg": map[string]any{
+					"type":        "string",
+					"description": "Input message text",
+				},
+				"errorTitle": map[string]any{
+					"type":        "string",
+					"description": "Title for error message",
+				},
+				"errorMsg": map[string]any{
+					"type":        "string",
+					"description": "Error message text",
+				},
+				"errorStyle": map[string]any{
+					"type":        "string",
+					"enum":        []string{"stop", "warning", "information"},
+					"description": "Error alert style",
+				},
+				"allowBlank": map[string]any{
+					"type":        "boolean",
+					"description": "Allow blank cells",
+				},
+				"listValues": map[string]any{
+					"type":        "array",
+					"description": "Array of values for dropdown list (alternative to formula1)",
+					"items": map[string]any{
+						"type": "string",
+					},
+				},
+				"minValue": map[string]any{
+					"type":        "number",
+					"description": "Minimum value for numeric validation",
+				},
+				"maxValue": map[string]any{
+					"type":        "number",
+					"description": "Maximum value for numeric validation",
+				},
+				"minLength": map[string]any{
+					"type":        "integer",
+					"description": "Minimum text length",
+				},
+				"maxLength": map[string]any{
+					"type":        "integer",
+					"description": "Maximum text length",
+				},
+			}),
+		),
+	), handleDataValidation)
+}
+
+func handleDataValidation(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := ExcelDataValidationArguments{}
+	issues := excelDataValidationArgumentsSchema.Parse(request.Params.Arguments, &args)
+	if len(issues) != 0 {
+		return imcp.NewToolResultZogIssueMap(issues), nil
+	}
+
+	// Handle validation options manually for full flexibility
+	// 完全な柔軟性のため検証オプションを手動処理するのです！ ٩(◕‿◕)۶
+	validationArg, ok := request.Params.Arguments["validation"]
+	if !ok {
+		return imcp.NewToolResultInvalidArgumentError("missing required parameter: validation"), nil
+	}
+	
+	validationMap, ok := validationArg.(map[string]any)
+	if !ok {
+		return imcp.NewToolResultInvalidArgumentError("validation must be an object"), nil
+	}
+	
+	// Parse validation options
+	validation := parseDataValidation(validationMap)
+	
+	return applyDataValidation(args.FileAbsolutePath, args.SheetName, args.Range, validation)
+}
+
+// parseDataValidation converts the JSON validation object to our DataValidation struct
+// JSON検証オブジェクトをDataValidation構造体に変換するのです！ (´∀｀)♡
+func parseDataValidation(validationMap map[string]any) DataValidation {
+	validation := DataValidation{
+		ShowDropdown: true,  // Default to showing dropdown
+		ShowInputMsg: true,  // Default to showing input message
+		ShowErrorMsg: true,  // Default to showing error message
+		AllowBlank:   true,  // Default to allowing blank
+		ErrorStyle:   "stop", // Default to stop style
+	}
+	
+	if val, ok := validationMap["type"].(string); ok {
+		validation.Type = val
+	}
+	if val, ok := validationMap["operator"].(string); ok {
+		validation.Operator = val
+	}
+	if val, ok := validationMap["formula1"].(string); ok {
+		validation.Formula1 = val
+	}
+	if val, ok := validationMap["formula2"].(string); ok {
+		validation.Formula2 = val
+	}
+	if val, ok := validationMap["showDropdown"].(bool); ok {
+		validation.ShowDropdown = val
+	}
+	if val, ok := validationMap["showInputMsg"].(bool); ok {
+		validation.ShowInputMsg = val
+	}
+	if val, ok := validationMap["showErrorMsg"].(bool); ok {
+		validation.ShowErrorMsg = val
+	}
+	if val, ok := validationMap["inputTitle"].(string); ok {
+		validation.InputTitle = val
+	}
+	if val, ok := validationMap["inputMsg"].(string); ok {
+		validation.InputMsg = val
+	}
+	if val, ok := validationMap["errorTitle"].(string); ok {
+		validation.ErrorTitle = val
+	}
+	if val, ok := validationMap["errorMsg"].(string); ok {
+		validation.ErrorMsg = val
+	}
+	if val, ok := validationMap["errorStyle"].(string); ok {
+		validation.ErrorStyle = val
+	}
+	if val, ok := validationMap["allowBlank"].(bool); ok {
+		validation.AllowBlank = val
+	}
+	if val, ok := validationMap["listValues"].([]interface{}); ok {
+		validation.ListValues = make([]string, len(val))
+		for i, v := range val {
+			if str, ok := v.(string); ok {
+				validation.ListValues[i] = str
+			}
+		}
+	}
+	if val, ok := validationMap["minValue"].(float64); ok {
+		validation.MinValue = val
+	}
+	if val, ok := validationMap["maxValue"].(float64); ok {
+		validation.MaxValue = val
+	}
+	if val, ok := validationMap["minLength"].(float64); ok {
+		validation.MinLength = int(val)
+	}
+	if val, ok := validationMap["maxLength"].(float64); ok {
+		validation.MaxLength = int(val)
+	}
+	
+	return validation
+}
+
+func applyDataValidation(fileAbsolutePath string, sheetName string, rangeStr string, validation DataValidation) (*mcp.CallToolResult, error) {
+	workbook, closeFn, err := excel.OpenFile(fileAbsolutePath)
+	if err != nil {
+		return nil, err
+	}
+	defer closeFn()
+
+	// Get the worksheet
+	worksheet, err := workbook.FindSheet(sheetName)
+	if err != nil {
+		return imcp.NewToolResultInvalidArgumentError(err.Error()), nil
+	}
+	defer worksheet.Release()
+
+	// Apply data validation based on backend type
+	// バックエンドタイプに基づいてデータ検証を適用するのです！ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+	err = applyValidation(workbook, worksheet, sheetName, rangeStr, validation)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply data validation: %w", err)
+	}
+
+	if err := workbook.Save(); err != nil {
+		return nil, err
+	}
+
+	// Generate response showing applied validation
+	// 適用された検証を表示するレスポンスを生成するのです！ (◕‿◕)♡
+	html := "<h2>✨ Data Validation Applied</h2>\n"
+	html += fmt.Sprintf("<p><strong>File:</strong> %s</p>\n", fileAbsolutePath)
+	html += fmt.Sprintf("<p><strong>Sheet:</strong> %s</p>\n", sheetName)
+	html += fmt.Sprintf("<p><strong>Range:</strong> %s</p>\n", rangeStr)
+	html += fmt.Sprintf("<p><strong>Backend:</strong> %s</p>\n", workbook.GetBackendName())
+	
+	html += "<h3>📋 Validation Rules:</h3>\n"
+	html += "<ul>\n"
+	
+	html += fmt.Sprintf("<li><strong>Type:</strong> %s</li>\n", validation.Type)
+	
+	if validation.Type == "list" {
+		if len(validation.ListValues) > 0 {
+			html += "<li><strong>List Values:</strong>\n<ul>\n"
+			for _, val := range validation.ListValues {
+				html += fmt.Sprintf("<li>%s</li>\n", val)
+			}
+			html += "</ul></li>\n"
+		} else if validation.Formula1 != "" {
+			html += fmt.Sprintf("<li><strong>List Source:</strong> %s</li>\n", validation.Formula1)
+		}
+		html += fmt.Sprintf("<li><strong>Show Dropdown:</strong> %v</li>\n", validation.ShowDropdown)
+	}
+	
+	if validation.Operator != "" {
+		html += fmt.Sprintf("<li><strong>Operator:</strong> %s</li>\n", validation.Operator)
+	}
+	
+	if validation.Type == "whole" || validation.Type == "decimal" {
+		if validation.MinValue != 0 || validation.MaxValue != 0 {
+			html += fmt.Sprintf("<li><strong>Range:</strong> %v to %v</li>\n", validation.MinValue, validation.MaxValue)
+		} else if validation.Formula1 != "" {
+			html += fmt.Sprintf("<li><strong>Value 1:</strong> %s</li>\n", validation.Formula1)
+			if validation.Formula2 != "" {
+				html += fmt.Sprintf("<li><strong>Value 2:</strong> %s</li>\n", validation.Formula2)
+			}
+		}
+	}
+	
+	if validation.Type == "textLength" {
+		if validation.MinLength > 0 || validation.MaxLength > 0 {
+			html += fmt.Sprintf("<li><strong>Length:</strong> %d to %d characters</li>\n", validation.MinLength, validation.MaxLength)
+		}
+	}
+	
+	if validation.InputTitle != "" || validation.InputMsg != "" {
+		html += "<li><strong>Input Message:</strong>\n<ul>\n"
+		if validation.InputTitle != "" {
+			html += fmt.Sprintf("<li>Title: %s</li>\n", validation.InputTitle)
+		}
+		if validation.InputMsg != "" {
+			html += fmt.Sprintf("<li>Message: %s</li>\n", validation.InputMsg)
+		}
+		html += "</ul></li>\n"
+	}
+	
+	if validation.ErrorTitle != "" || validation.ErrorMsg != "" {
+		html += "<li><strong>Error Alert:</strong>\n<ul>\n"
+		html += fmt.Sprintf("<li>Style: %s</li>\n", validation.ErrorStyle)
+		if validation.ErrorTitle != "" {
+			html += fmt.Sprintf("<li>Title: %s</li>\n", validation.ErrorTitle)
+		}
+		if validation.ErrorMsg != "" {
+			html += fmt.Sprintf("<li>Message: %s</li>\n", validation.ErrorMsg)
+		}
+		html += "</ul></li>\n"
+	}
+	
+	html += fmt.Sprintf("<li><strong>Allow Blank:</strong> %v</li>\n", validation.AllowBlank)
+	
+	html += "</ul>\n"
+	html += "<p>✅ Data validation has been successfully applied to the specified range!</p>\n"
+
+	return mcp.NewToolResultText(html), nil
+}
+
+// applyValidation applies the validation rules based on the Excel backend type  
+// Excelバックエンドタイプに基づいて検証ルールを適用するのです！ ✨(｡◕‿◕｡)
+func applyValidation(workbook excel.Excel, worksheet excel.Worksheet, sheetName string, rangeStr string, validation DataValidation) error {
+	// Use the new AddDataValidation interface method
+	// 新しいAddDataValidationインターフェースメソッドを使用するのです！ ✨(◕‿◕)♡
+	
+	// Convert our DataValidation to a map for the interface
+	// インターフェース用にDataValidationをmapに変換するのです！ (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+	validationMap := map[string]interface{}{
+		"type":         validation.Type,
+		"operator":     validation.Operator,
+		"formula1":     validation.Formula1,
+		"formula2":     validation.Formula2,
+		"showDropdown": validation.ShowDropdown,
+		"showInputMsg": validation.ShowInputMsg,
+		"showErrorMsg": validation.ShowErrorMsg,
+		"inputTitle":   validation.InputTitle,
+		"inputMsg":     validation.InputMsg,
+		"errorTitle":   validation.ErrorTitle,
+		"errorMsg":     validation.ErrorMsg,
+		"errorStyle":   validation.ErrorStyle,
+		"allowBlank":   validation.AllowBlank,
+		"listValues":   validation.ListValues,
+		"minValue":     validation.MinValue,
+		"maxValue":     validation.MaxValue,
+		"minLength":    validation.MinLength,
+		"maxLength":    validation.MaxLength,
+	}
+	
+	return workbook.AddDataValidation(sheetName, rangeStr, validationMap)
+}

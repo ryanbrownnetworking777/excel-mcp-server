@@ -1,0 +1,383 @@
+package tools
+
+import (
+	"context"
+	"fmt"
+
+	z "github.com/Oudwins/zog"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/negokaz/excel-mcp-server/internal/excel"
+	imcp "github.com/negokaz/excel-mcp-server/internal/mcp"
+)
+
+// ArrayLimits defines safe limits for different operations
+// 異なる操作の安全な制限を定義するのです！ ⚡(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+var ArrayLimits = struct {
+	MaxRowsPerRequest      int
+	MaxColumnsPerRequest   int
+	MaxCellsPerRequest     int
+	MaxDataTableCells      int
+	MaxGoalSeekIterations  int
+	MaxArrayElements       int
+	TimeoutPreventionLimit int
+}{
+	MaxRowsPerRequest:      100,    // Claude Desktop friendly row limit
+	MaxColumnsPerRequest:   50,     // Claude Desktop friendly column limit  
+	MaxCellsPerRequest:     1000,   // Total cells per single request
+	MaxDataTableCells:      500,    // Data table size limit
+	MaxGoalSeekIterations:  50,     // Reduced iterations to prevent timeout
+	MaxArrayElements:       200,    // Max array elements in JSON response
+	TimeoutPreventionLimit: 30,     // Seconds before forcing early return
+}
+
+// ExcelArrayLimiterArguments defines structure for checking array limits
+// 配列制限チェックの構造体だよ～ ✨(◕‿◕)♡
+type ExcelArrayLimiterArguments struct {
+	FileAbsolutePath string `zog:"fileAbsolutePath"`
+	SheetName        string `zog:"sheetName"`
+	Range            string `zog:"range"`
+	OperationType    string `zog:"operationType"` // "read", "write", "format", "validate"
+	PreventTimeout   bool   `zog:"preventTimeout"`
+}
+
+// ArrayValidationResult represents the result of array size validation
+// 配列サイズ検証の結果を表すのです！ 📊
+type ArrayValidationResult struct {
+	IsValid           bool   `json:"isValid"`
+	RequestedRows     int    `json:"requestedRows"`
+	RequestedColumns  int    `json:"requestedColumns"`
+	RequestedCells    int    `json:"requestedCells"`
+	AllowedRows       int    `json:"allowedRows"`
+	AllowedColumns    int    `json:"allowedColumns"`
+	AllowedCells      int    `json:"allowedCells"`
+	RecommendedChunks int    `json:"recommendedChunks"`
+	OperationType     string `json:"operationType"`
+	TimeoutRisk       string `json:"timeoutRisk"` // "low", "medium", "high"
+}
+
+var excelArrayLimiterArgumentsSchema = z.Struct(z.Schema{
+	"fileAbsolutePath": z.String().Test(AbsolutePathTest()).Required(),
+	"sheetName":        z.String().Required(),
+	"range":            z.String().Required(),
+	"operationType":    z.String().OneOf([]string{"read", "write", "format", "validate", "analyze"}).Default("read"),
+	"preventTimeout":   z.Bool().Default(true),
+})
+
+func AddExcelArrayLimiterTool(server *server.MCPServer) {
+	server.AddTool(mcp.NewTool("excel_array_limiter",
+		mcp.WithDescription("Check and validate array sizes to prevent Claude Desktop timeouts and provide chunking recommendations"),
+		mcp.WithString("fileAbsolutePath",
+			mcp.Required(),
+			mcp.Description("Absolute path to the Excel file"),
+		),
+		mcp.WithString("sheetName",
+			mcp.Required(),
+			mcp.Description("Sheet name in the Excel file"),
+		),
+		mcp.WithString("range",
+			mcp.Required(),
+			mcp.Description("Range to validate (e.g., \"A1:Z100\")"),
+		),
+		mcp.WithString("operationType",
+			mcp.Description("Type of operation: 'read', 'write', 'format', 'validate', 'analyze' (default: 'read')"),
+		),
+		mcp.WithBoolean("preventTimeout",
+			mcp.Description("Whether to apply timeout prevention limits (default: true)"),
+		),
+	), handleArrayLimiter)
+}
+
+func handleArrayLimiter(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := ExcelArrayLimiterArguments{}
+	issues := excelArrayLimiterArgumentsSchema.Parse(request.Params.Arguments, &args)
+	if len(issues) != 0 {
+		return imcp.NewToolResultZogIssueMap(issues), nil
+	}
+
+	return validateArrayLimits(args.FileAbsolutePath, args.SheetName, args.Range, args.OperationType, args.PreventTimeout)
+}
+
+func validateArrayLimits(fileAbsolutePath string, sheetName string, rangeStr string, operationType string, preventTimeout bool) (*mcp.CallToolResult, error) {
+	// Parse the range to get dimensions
+	// 範囲を解析して寸法を取得するのです！ 📏
+	startCol, startRow, endCol, endRow, err := excel.ParseRange(rangeStr)
+	if err != nil {
+		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("invalid range: %s", err.Error())), nil
+	}
+
+	requestedRows := endRow - startRow + 1
+	requestedColumns := endCol - startCol + 1
+	requestedCells := requestedRows * requestedColumns
+
+	// Determine operation-specific limits
+	// 操作固有の制限を決定するのです！ ⚙️
+	var allowedRows, allowedColumns, allowedCells int
+	
+	switch operationType {
+	case "read":
+		allowedRows = ArrayLimits.MaxRowsPerRequest
+		allowedColumns = ArrayLimits.MaxColumnsPerRequest
+		allowedCells = ArrayLimits.MaxCellsPerRequest
+	case "write":
+		allowedRows = ArrayLimits.MaxRowsPerRequest / 2  // Writing is more intensive
+		allowedColumns = ArrayLimits.MaxColumnsPerRequest / 2
+		allowedCells = ArrayLimits.MaxCellsPerRequest / 2
+	case "format":
+		allowedRows = ArrayLimits.MaxRowsPerRequest / 3  // Formatting is very intensive
+		allowedColumns = ArrayLimits.MaxColumnsPerRequest / 3
+		allowedCells = ArrayLimits.MaxCellsPerRequest / 3
+	case "validate", "analyze":
+		allowedRows = ArrayLimits.MaxRowsPerRequest / 4  // Analysis is most intensive
+		allowedColumns = ArrayLimits.MaxColumnsPerRequest / 4
+		allowedCells = ArrayLimits.MaxCellsPerRequest / 4
+	default:
+		allowedRows = ArrayLimits.MaxRowsPerRequest
+		allowedColumns = ArrayLimits.MaxColumnsPerRequest
+		allowedCells = ArrayLimits.MaxCellsPerRequest
+	}
+
+	// Apply timeout prevention if enabled
+	// タイムアウト防止が有効な場合適用するのです！ ⏰
+	if preventTimeout {
+		allowedRows = min(allowedRows, ArrayLimits.TimeoutPreventionLimit)
+		allowedColumns = min(allowedColumns, ArrayLimits.TimeoutPreventionLimit)
+		allowedCells = min(allowedCells, ArrayLimits.TimeoutPreventionLimit * 10)
+	}
+
+	// Check if request is within limits
+	// リクエストが制限内かチェックするのです！ ✅
+	isValid := requestedRows <= allowedRows && 
+		       requestedColumns <= allowedColumns && 
+		       requestedCells <= allowedCells
+
+	// Calculate recommended chunks if needed
+	// 必要に応じて推奨チャンク数を計算するのです！ 🧮
+	recommendedChunks := 1
+	if !isValid {
+		rowChunks := (requestedRows + allowedRows - 1) / allowedRows
+		colChunks := (requestedColumns + allowedColumns - 1) / allowedColumns
+		cellChunks := (requestedCells + allowedCells - 1) / allowedCells
+		recommendedChunks = max(rowChunks, max(colChunks, cellChunks))
+	}
+
+	// Assess timeout risk
+	// タイムアウトリスクを評価するのです！ ⚠️
+	timeoutRisk := "low"
+	if requestedCells > allowedCells/2 {
+		timeoutRisk = "medium"
+	}
+	if requestedCells > allowedCells {
+		timeoutRisk = "high"
+	}
+
+	result := &ArrayValidationResult{
+		IsValid:           isValid,
+		RequestedRows:     requestedRows,
+		RequestedColumns:  requestedColumns,
+		RequestedCells:    requestedCells,
+		AllowedRows:       allowedRows,
+		AllowedColumns:    allowedColumns,
+		AllowedCells:      allowedCells,
+		RecommendedChunks: recommendedChunks,
+		OperationType:     operationType,
+		TimeoutRisk:       timeoutRisk,
+	}
+
+	// Generate response with recommendations
+	// 推奨事項付きのレスポンスを生成するのです！ 📋
+	html := generateArrayLimiterHTML(fileAbsolutePath, sheetName, rangeStr, result)
+
+	return mcp.NewToolResultText(html), nil
+}
+
+func generateArrayLimiterHTML(fileAbsolutePath, sheetName, rangeStr string, result *ArrayValidationResult) string {
+	html := "<h2>⚡ Array Size Validation & Timeout Prevention</h2>\n"
+	html += fmt.Sprintf("<p><strong>File:</strong> %s</p>\n", fileAbsolutePath)
+	html += fmt.Sprintf("<p><strong>Sheet:</strong> %s</p>\n", sheetName)
+	html += fmt.Sprintf("<p><strong>Range:</strong> %s</p>\n", rangeStr)
+
+	// Status indicator with color coding
+	// 色分けされたステータス表示 🎨
+	statusColor := "#dc3545" // Red
+	statusIcon := "❌"
+	statusText := "EXCEEDS LIMITS"
+	
+	if result.IsValid {
+		statusColor = "#28a745" // Green
+		statusIcon = "✅"
+		statusText = "WITHIN LIMITS"
+	} else if result.TimeoutRisk == "medium" {
+		statusColor = "#ffc107" // Yellow
+		statusIcon = "⚠️"
+		statusText = "RISKY SIZE"
+	}
+
+	html += fmt.Sprintf("<h3>Status: <span style='color: %s;'>%s %s</span></h3>\n", statusColor, statusIcon, statusText)
+
+	// Request analysis table
+	// リクエスト分析テーブル 📊
+	html += "<div style='background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 15px; margin: 10px 0;'>\n"
+	html += "<table style='border-collapse: collapse; width: 100%;'>\n"
+	html += "<tr style='background-color: #e9ecef;'>\n"
+	html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: left;'>Metric</th>\n"
+	html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>Requested</th>\n"
+	html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>Allowed</th>\n"
+	html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: center;'>Status</th>\n"
+	html += "</tr>\n"
+
+	// Rows
+	rowStatus := "✅"
+	if result.RequestedRows > result.AllowedRows {
+		rowStatus = "❌"
+	}
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Rows</td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>%d</td>\n", result.RequestedRows)
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>%d</td>\n", result.AllowedRows)
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: center;'>%s</td>\n", rowStatus)
+	html += "</tr>\n"
+
+	// Columns
+	colStatus := "✅"
+	if result.RequestedColumns > result.AllowedColumns {
+		colStatus = "❌"
+	}
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Columns</td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>%d</td>\n", result.RequestedColumns)
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>%d</td>\n", result.AllowedColumns)
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: center;'>%s</td>\n", colStatus)
+	html += "</tr>\n"
+
+	// Total Cells
+	cellStatus := "✅"
+	if result.RequestedCells > result.AllowedCells {
+		cellStatus = "❌"
+	}
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'><strong>Total Cells</strong></td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right; font-weight: bold;'>%d</td>\n", result.RequestedCells)
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right; font-weight: bold;'>%d</td>\n", result.AllowedCells)
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: center;'>%s</td>\n", cellStatus)
+	html += "</tr>\n"
+
+	html += "</table>\n"
+	html += "</div>\n"
+
+	// Timeout risk assessment
+	// タイムアウトリスク評価 ⚠️
+	html += "<h3>⏰ Timeout Risk Assessment:</h3>\n"
+	html += "<ul>\n"
+	
+	riskColor := "#28a745" // Green
+	riskIcon := "🟢"
+	if result.TimeoutRisk == "medium" {
+		riskColor = "#ffc107" // Yellow
+		riskIcon = "🟡"
+	} else if result.TimeoutRisk == "high" {
+		riskColor = "#dc3545" // Red
+		riskIcon = "🔴"
+	}
+	
+	html += fmt.Sprintf("<li>Risk Level: <span style='color: %s;'>%s %s</span></li>\n", riskColor, riskIcon, result.TimeoutRisk)
+	html += fmt.Sprintf("<li>Operation Type: %s</li>\n", result.OperationType)
+	
+	if result.RecommendedChunks > 1 {
+		html += fmt.Sprintf("<li>🔧 <strong>Recommended:</strong> Split into %d chunks</li>\n", result.RecommendedChunks)
+	}
+	
+	html += "</ul>\n"
+
+	// Recommendations section
+	// 推奨事項セクション 💡
+	html += "<h3>💡 Recommendations:</h3>\n"
+	html += "<div style='background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 10px 0;'>\n"
+	
+	if result.IsValid {
+		html += "<p>✅ <strong>Safe to proceed</strong> - Request is within safe limits</p>\n"
+		html += "<ul>\n"
+		html += "<li>This operation should complete without timeout</li>\n"
+		html += "<li>Claude Desktop can handle this array size efficiently</li>\n"
+		html += "</ul>\n"
+	} else {
+		html += "<p>⚠️ <strong>Action Required</strong> - Request exceeds safe limits</p>\n"
+		html += "<ul>\n"
+		
+		if result.RecommendedChunks > 1 {
+			html += fmt.Sprintf("<li>🔧 <strong>Split the range into %d smaller chunks</strong></li>\n", result.RecommendedChunks)
+			
+			// Calculate recommended chunk size
+			recommendedRows := min(result.AllowedRows, result.RequestedRows)
+			recommendedCols := min(result.AllowedColumns, result.RequestedColumns)
+			
+			html += fmt.Sprintf("<li>📏 Suggested chunk size: %d rows × %d columns</li>\n", recommendedRows, recommendedCols)
+		}
+		
+		html += "<li>🕐 Current size may cause Claude Desktop timeout</li>\n"
+		html += "<li>📉 Consider using pagination or filtering</li>\n"
+		html += "<li>🎯 Focus on specific data ranges if possible</li>\n"
+		html += "</ul>\n"
+		
+		// Provide specific chunking examples
+		// 具体的なチャンク分割例を提供 📋
+		html += "<h4>🔧 Chunking Examples:</h4>\n"
+		html += "<ul>\n"
+		
+		if result.RequestedRows > result.AllowedRows {
+			chunkSize := result.AllowedRows
+			for i := 0; i < result.RecommendedChunks; i++ {
+				startRow := i*chunkSize + 1
+				endRow := min((i+1)*chunkSize, result.RequestedRows)
+				html += fmt.Sprintf("<li>Chunk %d: Rows %d-%d</li>\n", i+1, startRow, endRow)
+			}
+		}
+		
+		html += "</ul>\n"
+	}
+	
+	html += "</div>\n"
+
+	// Configuration info
+	// 設定情報 ⚙️
+	html += "<h3>⚙️ Current Limits Configuration:</h3>\n"
+	html += "<ul>\n"
+	html += fmt.Sprintf("<li>Max Rows per Request: %d</li>\n", ArrayLimits.MaxRowsPerRequest)
+	html += fmt.Sprintf("<li>Max Columns per Request: %d</li>\n", ArrayLimits.MaxColumnsPerRequest)
+	html += fmt.Sprintf("<li>Max Cells per Request: %d</li>\n", ArrayLimits.MaxCellsPerRequest)
+	html += fmt.Sprintf("<li>Timeout Prevention: %d seconds</li>\n", ArrayLimits.TimeoutPreventionLimit)
+	html += "</ul>\n"
+
+	html += "<p><strong>⚡ Array validation complete! Use recommendations above to prevent timeouts.</strong></p>\n"
+
+	return html
+}
+
+// Helper functions
+// ヘルパー関数だよ～ 🔧(´∀｀)♡
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// UpdateArrayLimitsForOperation adjusts limits based on operation complexity
+// 操作の複雑さに基づいて制限を調整するのです！ ⚡
+func UpdateArrayLimitsForOperation(operationType string) {
+	switch operationType {
+	case "goal_seek":
+		ArrayLimits.MaxGoalSeekIterations = 25 // Reduced for Claude Desktop
+	case "data_table":
+		ArrayLimits.MaxDataTableCells = 200    // Smaller data tables
+	case "monte_carlo":
+		ArrayLimits.MaxArrayElements = 50      // Much smaller for simulations
+	}
+}

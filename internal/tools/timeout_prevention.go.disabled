@@ -1,0 +1,142 @@
+package tools
+
+import (
+	"fmt"
+	"github.com/negokaz/excel-mcp-server/internal/excel"
+	imcp "github.com/negokaz/excel-mcp-server/internal/mcp"
+	"github.com/mark3labs/mcp-go/mcp"
+)
+
+// ValidateRangeForTimeout checks if a range is safe for Claude Desktop
+// 範囲がClaude Desktopで安全かチェックするのです！ ⚡(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+func ValidateRangeForTimeout(rangeStr string, operationType string) (*mcp.CallToolResult, error) {
+	startCol, startRow, endCol, endRow, err := excel.ParseRange(rangeStr)
+	if err != nil {
+		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("invalid range: %s", err.Error())), nil
+	}
+
+	requestedRows := endRow - startRow + 1
+	requestedColumns := endCol - startCol + 1
+	requestedCells := requestedRows * requestedColumns
+
+	// Get operation-specific limits
+	// 操作固有の制限を取得するのです！ 📊
+	var maxRows, maxCols, maxCells int
+	
+	switch operationType {
+	case "read":
+		maxRows = ArrayLimits.MaxRowsPerRequest
+		maxCols = ArrayLimits.MaxColumnsPerRequest
+		maxCells = ArrayLimits.MaxCellsPerRequest
+	case "write":
+		maxRows = ArrayLimits.MaxRowsPerRequest / 2
+		maxCols = ArrayLimits.MaxColumnsPerRequest / 2
+		maxCells = ArrayLimits.MaxCellsPerRequest / 2
+	case "format":
+		maxRows = ArrayLimits.MaxRowsPerRequest / 3
+		maxCols = ArrayLimits.MaxColumnsPerRequest / 3
+		maxCells = ArrayLimits.MaxCellsPerRequest / 3
+	default:
+		maxRows = ArrayLimits.MaxRowsPerRequest
+		maxCols = ArrayLimits.MaxColumnsPerRequest
+		maxCells = ArrayLimits.MaxCellsPerRequest
+	}
+
+	// Check if range exceeds limits
+	// 範囲が制限を超えるかチェックするのです！ ⚠️
+	if requestedRows > maxRows {
+		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("Range too large: %d rows (max: %d). Split into smaller chunks to prevent Claude Desktop timeout. Suggested chunk size: %d rows.", requestedRows, maxRows, maxRows)), nil
+	}
+
+	if requestedColumns > maxCols {
+		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("Range too wide: %d columns (max: %d). Split into smaller chunks to prevent Claude Desktop timeout. Suggested chunk size: %d columns.", requestedColumns, maxCols, maxCols)), nil
+	}
+
+	if requestedCells > maxCells {
+		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("Range too large: %d cells (max: %d). Split into smaller chunks to prevent Claude Desktop timeout. Suggested chunk size: %d cells.", requestedCells, maxCells, maxCells)), nil
+	}
+
+	return nil, nil // Range is safe
+}
+
+// SuggestChunking provides chunking recommendations for large ranges
+// 大きな範囲に対するチャンク分割の推奨事項を提供するのです！ 🔧(◕‿◕)♡
+func SuggestChunking(rangeStr string, operationType string) []string {
+	startCol, startRow, endCol, endRow, err := excel.ParseRange(rangeStr)
+	if err != nil {
+		return []string{}
+	}
+
+	var maxRows, maxCols int
+	switch operationType {
+	case "write":
+		maxRows = ArrayLimits.MaxRowsPerRequest / 2
+		maxCols = ArrayLimits.MaxColumnsPerRequest / 2
+	case "format":
+		maxRows = ArrayLimits.MaxRowsPerRequest / 3
+		maxCols = ArrayLimits.MaxColumnsPerRequest / 3
+	default:
+		maxRows = ArrayLimits.MaxRowsPerRequest
+		maxCols = ArrayLimits.MaxColumnsPerRequest
+	}
+
+	var chunks []string
+
+	// Generate row-wise chunks
+	// 行単位のチャンクを生成するのです！ 📏
+	for rowStart := startRow; rowStart <= endRow; rowStart += maxRows {
+		rowEnd := min(rowStart + maxRows - 1, endRow)
+		
+		for colStart := startCol; colStart <= endCol; colStart += maxCols {
+			colEnd := min(colStart + maxCols - 1, endCol)
+			
+			startCell, _ := excel.CoordinatesToCellName(colStart, rowStart)
+			endCell, _ := excel.CoordinatesToCellName(colEnd, rowEnd)
+			
+			chunk := fmt.Sprintf("%s:%s", startCell, endCell)
+			chunks = append(chunks, chunk)
+		}
+	}
+
+	return chunks
+}
+
+// TimeoutSafeHTML generates timeout-safe HTML responses
+// タイムアウト安全なHTMLレスポンスを生成するのです！ 📄✨
+func TimeoutSafeHTML(content string, totalItems int) string {
+	if len(content) > 50000 { // Limit HTML size
+		return fmt.Sprintf(`
+			<div style='background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 10px 0;'>
+				<h3>⚠️ Large Dataset Detected</h3>
+				<p><strong>Total items:</strong> %d</p>
+				<p><strong>Content truncated</strong> to prevent Claude Desktop timeout.</p>
+				<p>💡 <strong>Recommendation:</strong> Use smaller ranges or pagination for full results.</p>
+				<details>
+					<summary>Show Partial Results (Click to expand)</summary>
+					%s
+				</details>
+			</div>
+		`, totalItems, content[:10000]+"...[TRUNCATED]")
+	}
+	return content
+}
+
+// QuickValidationMessage provides immediate feedback for oversized requests
+// 大きすぎるリクエストに対する即座のフィードバックを提供するのです！ ⚡
+func QuickValidationMessage(operation string, requestSize int, maxSize int) string {
+	return fmt.Sprintf(`
+		<div style='background-color: #f8d7da; border: 1px solid #f5c6cb; padding: 15px; margin: 10px 0;'>
+			<h3>🚫 Request Too Large for Claude Desktop</h3>
+			<p><strong>Operation:</strong> %s</p>
+			<p><strong>Requested Size:</strong> %d</p>
+			<p><strong>Maximum Safe Size:</strong> %d</p>
+			<h4>💡 Solutions:</h4>
+			<ul>
+				<li>🔧 Split your range into chunks of %d or smaller</li>
+				<li>📊 Use filtering to reduce data size</li>
+				<li>🎯 Focus on specific data ranges</li>
+				<li>⚡ Use the excel_array_limiter tool to get chunking recommendations</li>
+			</ul>
+		</div>
+	`, operation, requestSize, maxSize, maxSize)
+}

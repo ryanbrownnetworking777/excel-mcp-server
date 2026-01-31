@@ -25,7 +25,7 @@ type ExcelWriteToSheetArguments struct {
 
 // Schema validation for Excel write arguments
 // Excelの書き込み引数のスキーマバリデーション〜 ٩(◕‿◕)۶
-var excelWriteToSheetArgumentsSchema = z.Struct(z.Schema{
+var excelWriteToSheetArgumentsSchema = z.Struct(z.Shape{
 	"fileAbsolutePath": z.String().Test(AbsolutePathTest()).Required(),
 	"sheetName":        z.String().Required(),
 	"newSheet":         z.Bool().Required().Default(false),
@@ -87,15 +87,10 @@ func handleWriteToSheet(ctx context.Context, request mcp.CallToolRequest) (*mcp.
 	}
 
 	// Handle values manually to support mixed types (string, number, boolean, null)
-	// as promised in the MCP tool schema - this fixes Claude Desktop compatibility! 
+	// as promised in the MCP tool schema - this fixes Claude Desktop compatibility!
 	// 混合型（文字列、数値、ブール値、null）をサポートするため手動処理です〜
 	// MCPツールスキーマで約束したとおりに！Claude Desktopとの互換性を修正するのです！ (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
-	valuesArg, ok := request.Params.Arguments["values"]
-	if !ok {
-		return imcp.NewToolResultInvalidArgumentError("missing required parameter: values"), nil
-	}
-	
-	valuesArray, ok := valuesArg.([]any)
+	valuesArray, ok := request.GetArguments()["values"].([]any)
 	if !ok {
 		return imcp.NewToolResultInvalidArgumentError("values must be a 2D array"), nil
 	}
@@ -121,6 +116,17 @@ func writeSheet(fileAbsolutePath string, sheetName string, newSheet bool, rangeS
 	}
 	defer closeFn()
 
+	startCol, startRow, endCol, endRow, err := excel.ParseRange(rangeStr)
+	if err != nil {
+		return imcp.NewToolResultInvalidArgumentError(err.Error()), nil
+	}
+
+	// データの整合性チェック
+	rangeRowSize := endRow - startRow + 1
+	if len(values) != rangeRowSize {
+		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("number of rows in data (%d) does not match range size (%d)", len(values), rangeRowSize)), nil
+	}
+
 	if newSheet {
 		if err := workbook.CreateNewSheet(sheetName); err != nil {
 			return nil, err
@@ -134,20 +140,7 @@ func writeSheet(fileAbsolutePath string, sheetName string, newSheet bool, rangeS
 	}
 	defer worksheet.Release()
 
-	startCol, startRow, endCol, endRow, err := excel.ParseRange(rangeStr)
-	if err != nil {
-		return imcp.NewToolResultInvalidArgumentError(err.Error()), nil
-	}
-
-	// Data integrity check - making sure dimensions match perfectly!
-	// データの整合性チェック - 寸法がピッタリ合うか確認するのです！ (｡･ω･｡)ﾉ♡
-	rangeRowSize := endRow - startRow + 1
-	if len(values) != rangeRowSize {
-		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("number of rows in data (%d) does not match range size (%d)", len(values), rangeRowSize)), nil
-	}
-
-	// Time to write the data! Let's make some Excel magic happen ✨
-	// データの書き込みタイム！Excelの魔法を発動させるのです！ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+	// データの書き込み
 	wroteFormula := false
 	var formulaCells []string // Track formula cells for validation
 	// 数式セルの検証用トラッキング配列だよ～ (◕‿◕)♡

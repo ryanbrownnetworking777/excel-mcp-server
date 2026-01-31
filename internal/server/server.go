@@ -18,27 +18,28 @@ func New(version string) *ExcelServer {
 		version,
 	)
 	tools.AddExcelCreateFileTool(s.server)
-	tools.AddExcelDeleteFileTool(s.server)
-	tools.AddExcelDeleteSheetTool(s.server)
+	// tools.AddExcelDeleteFileTool(s.server)   // TODO: Excel interfaceにGetSheetNames/DeleteSheet追加が必要
+	// tools.AddExcelDeleteSheetTool(s.server)  // TODO: Excel interfaceにGetSheetNames/DeleteSheet追加が必要
 	tools.AddExcelDescribeSheetsTool(s.server)
 	tools.AddExcelReadSheetTool(s.server)
 	if runtime.GOOS == "windows" {
 		tools.AddExcelScreenCaptureTool(s.server)
 	}
 	tools.AddExcelWriteToSheetTool(s.server)
-	tools.AddExcelFormatCellsTool(s.server)
-	tools.AddExcelDataValidationTool(s.server)
-	tools.AddExcelGoalSeekTool(s.server)
-	tools.AddExcelDataTableTool(s.server)
-	tools.AddExcelArrayLimiterTool(s.server)
+	// tools.AddExcelFormatCellsTool(s.server)        // TODO: zog API更新が必要
+	// tools.AddExcelDataValidationTool(s.server)     // TODO: zog API更新が必要
+	// tools.AddExcelGoalSeekTool(s.server)           // TODO: zog API更新が必要
+	// tools.AddExcelDataTableTool(s.server)          // TODO: zog API更新が必要
+	// tools.AddExcelArrayLimiterTool(s.server)       // TODO: zog API更新が必要
 	tools.AddExcelCreateTableTool(s.server)
 	tools.AddExcelCopySheetTool(s.server)
-	// フェーズ1: 財務モデリング基盤機能
-	tools.AddExcelFinancialTemplateTool(s.server)
-	tools.AddExcelCircularReferenceTool(s.server)
-	tools.AddExcelModelValidationTool(s.server)
-	tools.AddExcelFinancialFormattingTool(s.server)
-	tools.AddExcelHistoricalAnalysisTool(s.server)
+	tools.AddExcelFormatRangeTool(s.server)
+	// フェーズ1: 財務モデリング基盤機能 (TODO: zog API更新が必要)
+	// tools.AddExcelFinancialTemplateTool(s.server)
+	// tools.AddExcelCircularReferenceTool(s.server)
+	// tools.AddExcelModelValidationTool(s.server)
+	// tools.AddExcelFinancialFormattingTool(s.server)
+	// tools.AddExcelHistoricalAnalysisTool(s.server)
 	return s
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"strings"
 
 	z "github.com/Oudwins/zog"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -14,19 +13,19 @@ import (
 )
 
 type ExcelReadSheetArguments struct {
-	FileAbsolutePath  string   `zog:"fileAbsolutePath"`
-	SheetName         string   `zog:"sheetName"`
-	Range             string   `zog:"range"`
-	KnownPagingRanges []string `zog:"knownPagingRanges"`
-	ShowFormula       bool     `zog:"showFormula"`
+	FileAbsolutePath string `zog:"fileAbsolutePath"`
+	SheetName        string `zog:"sheetName"`
+	Range            string `zog:"range"`
+	ShowFormula      bool   `zog:"showFormula"`
+	ShowStyle        bool   `zog:"showStyle"`
 }
 
-var excelReadSheetArgumentsSchema = z.Struct(z.Schema{
-	"fileAbsolutePath":  z.String().Test(AbsolutePathTest()).Required(),
-	"sheetName":         z.String().Required(),
-	"range":             z.String(),
-	"knownPagingRanges": z.Slice(z.String()),
-	"showFormula":       z.Bool().Default(false),
+var excelReadSheetArgumentsSchema = z.Struct(z.Shape{
+	"fileAbsolutePath": z.String().Test(AbsolutePathTest()).Required(),
+	"sheetName":        z.String().Required(),
+	"range":            z.String(),
+	"showFormula":      z.Bool().Default(false),
+	"showStyle":        z.Bool().Default(false),
 })
 
 func AddExcelReadSheetTool(server *server.MCPServer) {
@@ -43,15 +42,11 @@ func AddExcelReadSheetTool(server *server.MCPServer) {
 		mcp.WithString("range",
 			mcp.Description("Range of cells to read in the Excel sheet (e.g., \"A1:C10\"). [default: first paging range]"),
 		),
-		mcp.WithArray("knownPagingRanges",
-			mcp.Description("List of already read paging ranges"),
-			mcp.Items(map[string]any{
-				"type": "string",
-			}),
-		),
 		mcp.WithBoolean("showFormula",
-			mcp.Required(),
 			mcp.Description("Show formula instead of value"),
+		),
+		mcp.WithBoolean("showStyle",
+			mcp.Description("Show style information for cells"),
 		),
 	), handleReadSheet)
 }
@@ -61,10 +56,10 @@ func handleReadSheet(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 	if issues := excelReadSheetArgumentsSchema.Parse(request.Params.Arguments, &args); len(issues) != 0 {
 		return imcp.NewToolResultZogIssueMap(issues), nil
 	}
-	return readSheet(args.FileAbsolutePath, args.SheetName, args.Range, args.KnownPagingRanges, args.ShowFormula)
+	return readSheet(args.FileAbsolutePath, args.SheetName, args.Range, args.ShowFormula, args.ShowStyle)
 }
 
-func readSheet(fileAbsolutePath string, sheetName string, valueRange string, knownPagingRanges []string, showFormula bool) (*mcp.CallToolResult, error) {
+func readSheet(fileAbsolutePath string, sheetName string, valueRange string, showFormula bool, showStyle bool) (*mcp.CallToolResult, error) {
 	config, issues := LoadConfig()
 	if issues != nil {
 		return imcp.NewToolResultZogIssueMap(issues), nil
@@ -101,12 +96,15 @@ func readSheet(fileAbsolutePath string, sheetName string, valueRange string, kno
 		currentRange = allRanges[0]
 	}
 
-	// 残りの範囲を計算
-	remainingRanges := pagingService.FilterRemainingPagingRanges(allRanges, append(knownPagingRanges, currentRange))
-
-	// 範囲の検証
-	if err := pagingService.ValidatePagingRange(currentRange); err != nil {
-		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("invalid range: %v", err)), nil
+	// Find next paging range if current range matches a paging range
+	nextRange := pagingService.FindNextRange(allRanges, currentRange)
+	// Validate the current range against the used range
+	usedRange, err := worksheet.GetDimention()
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRangeWithinUsedRange(currentRange, usedRange); err != nil {
+		return imcp.NewToolResultInvalidArgumentError(err.Error()), nil
 	}
 
 	// 範囲を解析
@@ -117,10 +115,18 @@ func readSheet(fileAbsolutePath string, sheetName string, valueRange string, kno
 
 	// HTMLテーブルの生成
 	var table *string
-	if showFormula {
-		table, err = CreateHTMLTableOfFormula(worksheet, startCol, startRow, endCol, endRow)
+	if showStyle {
+		if showFormula {
+			table, err = CreateHTMLTableOfFormulaWithStyle(worksheet, startCol, startRow, endCol, endRow)
+		} else {
+			table, err = CreateHTMLTableOfValuesWithStyle(worksheet, startCol, startRow, endCol, endRow)
+		}
 	} else {
-		table, err = CreateHTMLTableOfValues(worksheet, startCol, startRow, endCol, endRow)
+		if showFormula {
+			table, err = CreateHTMLTableOfFormula(worksheet, startCol, startRow, endCol, endRow)
+		} else {
+			table, err = CreateHTMLTableOfValues(worksheet, startCol, startRow, endCol, endRow)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -135,12 +141,34 @@ func readSheet(fileAbsolutePath string, sheetName string, valueRange string, kno
 	result += fmt.Sprintf("<li>read range: %s</li>\n", currentRange)
 	result += "</ul>\n"
 	result += "<h2>Notice</h2>\n"
-	if len(remainingRanges) > 0 {
-		result += "<p>This sheet has more some ranges.</p>\n"
-		result += "<p>To read the next range, you should specify 'range' and 'knownPagingRanges' arguments as follows.</p>\n"
-		result += fmt.Sprintf("<code>{ \"range\": \"%s\", \"knownPagingRanges\": [%s] }</code>\n", remainingRanges[0], "\""+strings.Join(append(knownPagingRanges, currentRange), "\", \"")+"\"")
+	if nextRange != "" {
+		result += "<p>This sheet has more ranges.</p>\n"
+		result += "<p>To read the next range, you should specify 'range' argument as follows.</p>\n"
+		result += fmt.Sprintf("<code>{ \"range\": \"%s\" }</code>\n", nextRange)
 	} else {
-		result += "<p>All ranges have been read.</p>\n"
+		result += "<p>This is the last range or no more ranges available.</p>\n"
 	}
 	return mcp.NewToolResultText(result), nil
+}
+
+func validateRangeWithinUsedRange(targetRange, usedRange string) error {
+	// Parse target range
+	targetStartCol, targetStartRow, targetEndCol, targetEndRow, err := excel.ParseRange(targetRange)
+	if err != nil {
+		return fmt.Errorf("failed to parse target range: %w", err)
+	}
+
+	// Parse used range
+	usedStartCol, usedStartRow, usedEndCol, usedEndRow, err := excel.ParseRange(usedRange)
+	if err != nil {
+		return fmt.Errorf("failed to parse used range: %w", err)
+	}
+
+	// Check if target range is within used range
+	if targetStartCol < usedStartCol || targetStartRow < usedStartRow ||
+		targetEndCol > usedEndCol || targetEndRow > usedEndRow {
+		return fmt.Errorf("range is outside of used range: %s is not within %s", targetRange, usedRange)
+	}
+
+	return nil
 }

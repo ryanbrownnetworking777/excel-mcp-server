@@ -1,0 +1,525 @@
+package tools
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+
+	z "github.com/Oudwins/zog"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/negokaz/excel-mcp-server/internal/excel"
+	imcp "github.com/negokaz/excel-mcp-server/internal/mcp"
+)
+
+// ExcelDataTableArguments defines the structure for Excel Data Table (What-If Analysis)
+// Excel データテーブル（What-If分析）の構造体だよ～ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+type ExcelDataTableArguments struct {
+	FileAbsolutePath string   `zog:"fileAbsolutePath"`
+	SheetName        string   `zog:"sheetName"`
+	TableRange       string   `zog:"tableRange"`       // Range where data table will be created
+	FormulaCell      string   `zog:"formulaCell"`      // Cell containing the formula to analyze
+	InputCell1       string   `zog:"inputCell1"`       // First input cell (row input)
+	InputCell2       string   `zog:"inputCell2"`       // Second input cell (column input, optional)
+	InputValues1     []float64 `zog:"inputValues1"`     // Values for first input
+	InputValues2     []float64 `zog:"inputValues2"`     // Values for second input (optional)
+	TableType        string   `zog:"tableType"`        // "one-input" or "two-input"
+}
+
+// DataTableResult represents the result of data table creation
+// データテーブル作成の結果を表すのです！ 📊(◕‿◕)♡
+type DataTableResult struct {
+	TableRange    string      `json:"tableRange"`
+	FormulaCell   string      `json:"formulaCell"`
+	InputCell1    string      `json:"inputCell1"`
+	InputCell2    string      `json:"inputCell2,omitempty"`
+	ResultMatrix  [][]float64 `json:"resultMatrix"`
+	InputValues1  []float64   `json:"inputValues1"`
+	InputValues2  []float64   `json:"inputValues2,omitempty"`
+	TableType     string      `json:"tableType"`
+	CellsCreated  int         `json:"cellsCreated"`
+}
+
+var excelDataTableArgumentsSchema = z.Struct(z.Schema{
+	"fileAbsolutePath": z.String().Test(AbsolutePathTest()).Required(),
+	"sheetName":        z.String().Required(),
+	"tableRange":       z.String().Required(),
+	"formulaCell":      z.String().Required(),
+	"inputCell1":       z.String().Required(),
+	"inputCell2":       z.String().Optional(),
+	"inputValues1":     z.Slice(z.Float()).Required(),
+	"inputValues2":     z.Slice(z.Float()).Optional(),
+	"tableType":        z.String().OneOf([]string{"one-input", "two-input"}).Default("one-input"),
+})
+
+func AddExcelDataTableTool(server *server.MCPServer) {
+	server.AddTool(mcp.NewTool("excel_data_table",
+		mcp.WithDescription("Create Data Tables for What-If analysis in Excel to analyze how different input values affect formula results"),
+		mcp.WithString("fileAbsolutePath",
+			mcp.Required(),
+			mcp.Description("Absolute path to the Excel file"),
+		),
+		mcp.WithString("sheetName",
+			mcp.Required(),
+			mcp.Description("Sheet name in the Excel file"),
+		),
+		mcp.WithString("tableRange",
+			mcp.Required(),
+			mcp.Description("Range where data table will be created (e.g., \"A1:F10\")"),
+		),
+		mcp.WithString("formulaCell",
+			mcp.Required(),
+			mcp.Description("Cell reference containing the formula to analyze (e.g., \"B2\")"),
+		),
+		mcp.WithString("inputCell1",
+			mcp.Required(),
+			mcp.Description("First input cell that affects the formula (row input)"),
+		),
+		mcp.WithString("inputCell2",
+			mcp.Description("Second input cell for two-input tables (column input)"),
+		),
+		mcp.WithArray("inputValues1",
+			mcp.Required(),
+			mcp.Description("Array of values to test for the first input"),
+			mcp.Items(map[string]any{
+				"type": "number",
+			}),
+		),
+		mcp.WithArray("inputValues2",
+			mcp.Description("Array of values to test for the second input (for two-input tables)"),
+			mcp.Items(map[string]any{
+				"type": "number",
+			}),
+		),
+		mcp.WithString("tableType",
+			mcp.Description("Type of data table: 'one-input' or 'two-input' (default: 'one-input')"),
+		),
+	), handleDataTable)
+}
+
+func handleDataTable(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := ExcelDataTableArguments{}
+	issues := excelDataTableArgumentsSchema.Parse(request.Params.Arguments, &args)
+	if len(issues) != 0 {
+		return imcp.NewToolResultZogIssueMap(issues), nil
+	}
+
+	// Validate table type and inputs
+	// テーブルタイプと入力を検証するのです！ ✅
+	if args.TableType == "two-input" && (args.InputCell2 == "" || len(args.InputValues2) == 0) {
+		return imcp.NewToolResultInvalidArgumentError("two-input table requires inputCell2 and inputValues2"), nil
+	}
+
+	// Set default table type
+	// デフォルトのテーブルタイプを設定するのです！ ⚙️
+	if args.TableType == "" {
+		args.TableType = "one-input"
+	}
+
+	return createDataTable(args.FileAbsolutePath, args.SheetName, args.TableRange, args.FormulaCell, 
+		args.InputCell1, args.InputCell2, args.InputValues1, args.InputValues2, args.TableType)
+}
+
+func createDataTable(fileAbsolutePath string, sheetName string, tableRange string, formulaCell string, 
+	inputCell1 string, inputCell2 string, inputValues1 []float64, inputValues2 []float64, tableType string) (*mcp.CallToolResult, error) {
+	
+	// Claude Desktop timeout prevention - limit array sizes
+	// Claude Desktopタイムアウト防止 - 配列サイズを制限するのです！ ⏰(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+	if len(inputValues1) > ArrayLimits.MaxArrayElements {
+		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("inputValues1 array too large (%d elements). Maximum allowed: %d. Please split into smaller chunks to prevent Claude Desktop timeout.", len(inputValues1), ArrayLimits.MaxArrayElements)), nil
+	}
+	
+	if len(inputValues2) > ArrayLimits.MaxArrayElements {
+		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("inputValues2 array too large (%d elements). Maximum allowed: %d. Please split into smaller chunks to prevent Claude Desktop timeout.", len(inputValues2), ArrayLimits.MaxArrayElements)), nil
+	}
+	
+	// Calculate total scenarios and warn if too many
+	// 総シナリオ数を計算し、多すぎる場合は警告するのです！ ⚠️
+	totalScenarios := len(inputValues1)
+	if tableType == "two-input" {
+		totalScenarios = len(inputValues1) * len(inputValues2)
+	}
+	
+	if totalScenarios > ArrayLimits.MaxDataTableCells {
+		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("Data table too large (%d scenarios). Maximum allowed: %d. Consider reducing input values or using one-input table to prevent Claude Desktop timeout.", totalScenarios, ArrayLimits.MaxDataTableCells)), nil
+	}
+	
+	workbook, closeFn, err := excel.OpenFile(fileAbsolutePath)
+	if err != nil {
+		return nil, err
+	}
+	defer closeFn()
+
+	// Get the worksheet
+	worksheet, err := workbook.FindSheet(sheetName)
+	if err != nil {
+		return imcp.NewToolResultInvalidArgumentError(err.Error()), nil
+	}
+	defer worksheet.Release()
+
+	// Parse table range
+	// テーブル範囲を解析するのです！ 📏
+	startCol, startRow, endCol, endRow, err := excel.ParseRange(tableRange)
+	if err != nil {
+		return imcp.NewToolResultInvalidArgumentError(fmt.Sprintf("invalid table range: %s", err.Error())), nil
+	}
+
+	// Store original input values
+	// 元の入力値を保存するのです！ 💾
+	originalValue1, err := worksheet.GetValue(inputCell1)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get original value from %s: %w", inputCell1, err)
+	}
+
+	var originalValue2 string
+	if inputCell2 != "" {
+		originalValue2, err = worksheet.GetValue(inputCell2)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get original value from %s: %w", inputCell2, err)
+		}
+	}
+
+	var result *DataTableResult
+
+	if tableType == "one-input" {
+		result, err = createOneInputDataTable(worksheet, startCol, startRow, endCol, endRow, 
+			formulaCell, inputCell1, inputValues1)
+	} else {
+		result, err = createTwoInputDataTable(worksheet, startCol, startRow, endCol, endRow, 
+			formulaCell, inputCell1, inputCell2, inputValues1, inputValues2)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to create data table: %w", err)
+	}
+
+	// Restore original input values
+	// 元の入力値を復元するのです！ 🔄
+	err = worksheet.SetValue(inputCell1, parseStringToValue(originalValue1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to restore original value: %w", err)
+	}
+	
+	if inputCell2 != "" {
+		err = worksheet.SetValue(inputCell2, parseStringToValue(originalValue2))
+		if err != nil {
+			return nil, fmt.Errorf("failed to restore original value: %w", err)
+		}
+	}
+
+	// Save the workbook
+	// ワークブックを保存するのです！ 💾
+	if err := workbook.Save(); err != nil {
+		return nil, err
+	}
+
+	// Generate response showing Data Table results
+	// データテーブル結果を表示するレスポンスを生成するのです！ 📊
+	html := generateDataTableHTML(fileAbsolutePath, sheetName, workbook.GetBackendName(), result)
+
+	return mcp.NewToolResultText(html), nil
+}
+
+// createOneInputDataTable creates a one-input data table
+// 1入力データテーブルを作成するのです！ 📈(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+func createOneInputDataTable(worksheet excel.Worksheet, startCol, startRow, endCol, endRow int, 
+	formulaCell string, inputCell string, inputValues []float64) (*DataTableResult, error) {
+
+	result := &DataTableResult{
+		FormulaCell:  formulaCell,
+		InputCell1:   inputCell,
+		InputValues1: inputValues,
+		TableType:    "one-input",
+		ResultMatrix: make([][]float64, len(inputValues)),
+	}
+
+	cellsCreated := 0
+
+	// Create column headers (input values)
+	// 列ヘッダー（入力値）を作成するのです！ 📋
+	for i, value := range inputValues {
+		if startRow+i+1 <= endRow {
+			cell, err := excel.CoordinatesToCellName(startCol, startRow+i+1)
+			if err != nil {
+				return nil, err
+			}
+			err = worksheet.SetValue(cell, value)
+			if err != nil {
+				return nil, err
+			}
+			cellsCreated++
+		}
+	}
+
+	// Set formula reference in top-left corner
+	// 左上隅に数式参照を設定するのです！ 🎯
+	topLeftCell, err := excel.CoordinatesToCellName(startCol, startRow)
+	if err != nil {
+		return nil, err
+	}
+	err = worksheet.SetFormula(topLeftCell, "="+formulaCell)
+	if err != nil {
+		return nil, err
+	}
+	cellsCreated++
+
+	// Calculate results for each input value
+	// 各入力値の結果を計算するのです！ ⚡
+	for i, value := range inputValues {
+		// Set input value
+		// 入力値を設定するのです！ 📝
+		err = worksheet.SetValue(inputCell, value)
+		if err != nil {
+			return nil, err
+		}
+
+		// Get formula result
+		// 数式結果を取得するのです！ 📊
+		formulaResultStr, err := worksheet.GetValue(formulaCell)
+		if err != nil {
+			return nil, err
+		}
+
+		formulaResult, err := strconv.ParseFloat(formulaResultStr, 64)
+		if err != nil {
+			formulaResult = 0 // Default for non-numeric results
+		}
+
+		result.ResultMatrix[i] = []float64{formulaResult}
+
+		// Set result in table
+		// テーブルに結果を設定するのです！ ✨
+		if startCol+1 <= endCol && startRow+i+1 <= endRow {
+			resultCell, err := excel.CoordinatesToCellName(startCol+1, startRow+i+1)
+			if err != nil {
+				return nil, err
+			}
+			err = worksheet.SetValue(resultCell, formulaResult)
+			if err != nil {
+				return nil, err
+			}
+			cellsCreated++
+		}
+	}
+
+	result.CellsCreated = cellsCreated
+	return result, nil
+}
+
+// createTwoInputDataTable creates a two-input data table
+// 2入力データテーブルを作成するのです！ 📊✨
+func createTwoInputDataTable(worksheet excel.Worksheet, startCol, startRow, endCol, endRow int,
+	formulaCell string, inputCell1, inputCell2 string, inputValues1, inputValues2 []float64) (*DataTableResult, error) {
+
+	result := &DataTableResult{
+		FormulaCell:  formulaCell,
+		InputCell1:   inputCell1,
+		InputCell2:   inputCell2,
+		InputValues1: inputValues1,
+		InputValues2: inputValues2,
+		TableType:    "two-input",
+		ResultMatrix: make([][]float64, len(inputValues1)),
+	}
+
+	cellsCreated := 0
+
+	// Initialize result matrix
+	// 結果マトリックスを初期化するのです！ 🔢
+	for i := range result.ResultMatrix {
+		result.ResultMatrix[i] = make([]float64, len(inputValues2))
+	}
+
+	// Create row headers (input values 1)
+	// 行ヘッダー（入力値1）を作成するのです！ 📋
+	for i, value := range inputValues1 {
+		if startRow+i+1 <= endRow {
+			cell, err := excel.CoordinatesToCellName(startCol, startRow+i+1)
+			if err != nil {
+				return nil, err
+			}
+			err = worksheet.SetValue(cell, value)
+			if err != nil {
+				return nil, err
+			}
+			cellsCreated++
+		}
+	}
+
+	// Create column headers (input values 2)
+	// 列ヘッダー（入力値2）を作成するのです！ 📋
+	for j, value := range inputValues2 {
+		if startCol+j+1 <= endCol {
+			cell, err := excel.CoordinatesToCellName(startCol+j+1, startRow)
+			if err != nil {
+				return nil, err
+			}
+			err = worksheet.SetValue(cell, value)
+			if err != nil {
+				return nil, err
+			}
+			cellsCreated++
+		}
+	}
+
+	// Set formula reference in top-left corner
+	// 左上隅に数式参照を設定するのです！ 🎯
+	topLeftCell, err := excel.CoordinatesToCellName(startCol, startRow)
+	if err != nil {
+		return nil, err
+	}
+	err = worksheet.SetFormula(topLeftCell, "="+formulaCell)
+	if err != nil {
+		return nil, err
+	}
+	cellsCreated++
+
+	// Calculate results for each combination
+	// 各組み合わせの結果を計算するのです！ ⚡
+	for i, value1 := range inputValues1 {
+		for j, value2 := range inputValues2 {
+			// Set input values
+			// 入力値を設定するのです！ 📝
+			err = worksheet.SetValue(inputCell1, value1)
+			if err != nil {
+				return nil, err
+			}
+			err = worksheet.SetValue(inputCell2, value2)
+			if err != nil {
+				return nil, err
+			}
+
+			// Get formula result
+			// 数式結果を取得するのです！ 📊
+			formulaResultStr, err := worksheet.GetValue(formulaCell)
+			if err != nil {
+				return nil, err
+			}
+
+			formulaResult, err := strconv.ParseFloat(formulaResultStr, 64)
+			if err != nil {
+				formulaResult = 0 // Default for non-numeric results
+			}
+
+			result.ResultMatrix[i][j] = formulaResult
+
+			// Set result in table
+			// テーブルに結果を設定するのです！ ✨
+			if startCol+j+1 <= endCol && startRow+i+1 <= endRow {
+				resultCell, err := excel.CoordinatesToCellName(startCol+j+1, startRow+i+1)
+				if err != nil {
+					return nil, err
+				}
+				err = worksheet.SetValue(resultCell, formulaResult)
+				if err != nil {
+					return nil, err
+				}
+				cellsCreated++
+			}
+		}
+	}
+
+	result.CellsCreated = cellsCreated
+	return result, nil
+}
+
+// generateDataTableHTML generates HTML response for data table results
+// データテーブル結果のHTMLレスポンスを生成するのです！ 🎨(◕‿◕)♡
+func generateDataTableHTML(fileAbsolutePath, sheetName, backendName string, result *DataTableResult) string {
+	html := "<h2>📊 Data Table (What-If Analysis) Complete</h2>\n"
+	html += fmt.Sprintf("<p><strong>File:</strong> %s</p>\n", fileAbsolutePath)
+	html += fmt.Sprintf("<p><strong>Sheet:</strong> %s</p>\n", sheetName)
+	html += fmt.Sprintf("<p><strong>Backend:</strong> %s</p>\n", backendName)
+
+	html += "<h3>📋 Data Table Parameters:</h3>\n"
+	html += "<ul>\n"
+	html += fmt.Sprintf("<li><strong>Formula Cell:</strong> %s</li>\n", result.FormulaCell)
+	html += fmt.Sprintf("<li><strong>Input Cell 1:</strong> %s</li>\n", result.InputCell1)
+	if result.InputCell2 != "" {
+		html += fmt.Sprintf("<li><strong>Input Cell 2:</strong> %s</li>\n", result.InputCell2)
+	}
+	html += fmt.Sprintf("<li><strong>Table Type:</strong> %s</li>\n", result.TableType)
+	html += fmt.Sprintf("<li><strong>Cells Created:</strong> %d</li>\n", result.CellsCreated)
+	html += "</ul>\n"
+
+	// Results preview table
+	// 結果プレビューテーブル ✨
+	html += "<h3>📈 Results Preview:</h3>\n"
+	html += "<div style='background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 15px; margin: 10px 0; overflow-x: auto;'>\n"
+	html += "<table style='border-collapse: collapse; width: 100%; min-width: 400px;'>\n"
+
+	if result.TableType == "one-input" {
+		// One-input table display
+		// 1入力テーブル表示 📈
+		html += "<tr style='background-color: #e9ecef;'>\n"
+		html += fmt.Sprintf("<th style='border: 1px solid #adb5bd; padding: 8px;'>%s</th>\n", result.InputCell1)
+		html += fmt.Sprintf("<th style='border: 1px solid #adb5bd; padding: 8px;'>%s Result</th>\n", result.FormulaCell)
+		html += "</tr>\n"
+
+		for i, value1 := range result.InputValues1 {
+			if i < len(result.ResultMatrix) {
+				html += "<tr>\n"
+				html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>%.4f</td>\n", value1)
+				if len(result.ResultMatrix[i]) > 0 {
+					html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right; font-weight: bold;'>%.6f</td>\n", result.ResultMatrix[i][0])
+				}
+				html += "</tr>\n"
+			}
+		}
+	} else {
+		// Two-input table display
+		// 2入力テーブル表示 📊
+		html += "<tr style='background-color: #e9ecef;'>\n"
+		html += fmt.Sprintf("<th style='border: 1px solid #adb5bd; padding: 8px;'>%s \\ %s</th>\n", result.InputCell1, result.InputCell2)
+		for _, value2 := range result.InputValues2 {
+			html += fmt.Sprintf("<th style='border: 1px solid #adb5bd; padding: 8px; text-align: center;'>%.4f</th>\n", value2)
+		}
+		html += "</tr>\n"
+
+		for i, value1 := range result.InputValues1 {
+			html += "<tr>\n"
+			html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right; font-weight: bold; background-color: #f8f9fa;'>%.4f</td>\n", value1)
+			if i < len(result.ResultMatrix) {
+				for j := range result.InputValues2 {
+					if j < len(result.ResultMatrix[i]) {
+						html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>%.6f</td>\n", result.ResultMatrix[i][j])
+					}
+				}
+			}
+			html += "</tr>\n"
+		}
+	}
+
+	html += "</table>\n"
+	html += "</div>\n"
+
+	// Analysis and insights
+	// 分析と洞察 💡
+	html += "<h3>💡 Analysis:</h3>\n"
+	html += "<ul>\n"
+	html += fmt.Sprintf("<li>✅ Successfully created %s data table with %d scenarios</li>\n", 
+		result.TableType, len(result.InputValues1) * len(result.InputValues2))
+	
+	if result.TableType == "one-input" {
+		html += fmt.Sprintf("<li>📈 Analyzed %d different values for %s</li>\n", len(result.InputValues1), result.InputCell1)
+	} else {
+		html += fmt.Sprintf("<li>📊 Analyzed %d × %d combinations (%d total scenarios)</li>\n", 
+			len(result.InputValues1), len(result.InputValues2), len(result.InputValues1) * len(result.InputValues2))
+	}
+	
+	html += "<li>🎯 Use this table to identify optimal input values</li>\n"
+	html += "<li>📋 Results are now embedded in the Excel worksheet for further analysis</li>\n"
+	html += "</ul>\n"
+
+	html += "<p><strong>📊 Data table has been successfully created in the Excel worksheet!</strong></p>\n"
+
+	return html
+}
+
+// parseStringToValue converts string to appropriate type for Excel
+// 文字列をExcel用の適切な型に変換するのです！ 🔄(´∀｀)♡
+func parseStringToValue(str string) interface{} {
+	if val, err := strconv.ParseFloat(str, 64); err == nil {
+		return val
+	}
+	return str
+}

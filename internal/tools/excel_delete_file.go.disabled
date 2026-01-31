@@ -1,0 +1,277 @@
+package tools
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	z "github.com/Oudwins/zog"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	imcp "github.com/negokaz/excel-mcp-server/internal/mcp"
+)
+
+// ExcelDeleteFileArguments defines the structure for Excel file deletion
+// Excelファイル削除の構造体だよ～ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+type ExcelDeleteFileArguments struct {
+	FileAbsolutePath string `zog:"fileAbsolutePath"`
+	ConfirmDelete    bool   `zog:"confirmDelete"`
+}
+
+// DeleteFileResult represents the result of file deletion
+// ファイル削除結果を表すのです！ 🗑️(◕‿◕)♡
+type DeleteFileResult struct {
+	Success       bool   `json:"success"`
+	FilePath      string `json:"filePath"`
+	FileSize      int64  `json:"fileSize,omitempty"`
+	ErrorMessage  string `json:"errorMessage,omitempty"`
+	FileExisted   bool   `json:"fileExisted"`
+	BackupCreated bool   `json:"backupCreated,omitempty"`
+	BackupPath    string `json:"backupPath,omitempty"`
+}
+
+var excelDeleteFileArgumentsSchema = z.Struct(z.Schema{
+	"fileAbsolutePath": z.String().Test(AbsolutePathTest()).Required(),
+	"confirmDelete":    z.Bool().Required(),
+})
+
+func AddExcelDeleteFileTool(server *server.MCPServer) {
+	server.AddTool(mcp.NewTool("excel_delete_file",
+		mcp.WithDescription("Delete an Excel file from the filesystem with optional backup creation"),
+		mcp.WithString("fileAbsolutePath",
+			mcp.Required(),
+			mcp.Description("Absolute path to the Excel file to delete"),
+		),
+		mcp.WithBoolean("confirmDelete",
+			mcp.Required(),
+			mcp.Description("Confirmation flag - must be true to proceed with deletion"),
+		),
+	), handleDeleteFile)
+}
+
+func handleDeleteFile(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := ExcelDeleteFileArguments{}
+	issues := excelDeleteFileArgumentsSchema.Parse(request.Params.Arguments, &args)
+	if len(issues) != 0 {
+		return imcp.NewToolResultZogIssueMap(issues), nil
+	}
+
+	// Safety check - require explicit confirmation
+	// 安全チェック - 明示的な確認が必要なのです！ ⚠️
+	if !args.ConfirmDelete {
+		return imcp.NewToolResultInvalidArgumentError("confirmDelete must be true to proceed with file deletion"), nil
+	}
+
+	return deleteExcelFile(args.FileAbsolutePath)
+}
+
+func deleteExcelFile(fileAbsolutePath string) (*mcp.CallToolResult, error) {
+	result := &DeleteFileResult{
+		FilePath:    fileAbsolutePath,
+		Success:     false,
+		FileExisted: false,
+	}
+
+	// Check if file exists
+	// ファイルの存在をチェックするのです！ 📁
+	fileInfo, err := os.Stat(fileAbsolutePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			result.ErrorMessage = "File does not exist"
+			html := generateDeleteFileHTML(result)
+			return mcp.NewToolResultText(html), nil
+		}
+		result.ErrorMessage = fmt.Sprintf("Error checking file: %v", err)
+		html := generateDeleteFileHTML(result)
+		return mcp.NewToolResultText(html), nil
+	}
+
+	result.FileExisted = true
+	result.FileSize = fileInfo.Size()
+
+	// Validate file extension
+	// ファイル拡張子を検証するのです！ 📋
+	ext := filepath.Ext(fileAbsolutePath)
+	if ext != ".xlsx" && ext != ".xlsm" && ext != ".xls" {
+		result.ErrorMessage = fmt.Sprintf("Invalid file type: %s. Only Excel files (.xlsx, .xlsm, .xls) can be deleted", ext)
+		html := generateDeleteFileHTML(result)
+		return mcp.NewToolResultText(html), nil
+	}
+
+	// Create backup before deletion (optional safety feature)
+	// 削除前にバックアップを作成するのです！ 💾
+	backupPath := ""
+	if fileInfo.Size() > 0 { // Only backup non-empty files
+		backupPath = fileAbsolutePath + ".backup"
+		if err := createBackup(fileAbsolutePath, backupPath); err == nil {
+			result.BackupCreated = true
+			result.BackupPath = backupPath
+		}
+	}
+
+	// Perform the actual file deletion
+	// 実際のファイル削除を実行するのです！ 🗑️
+	err = os.Remove(fileAbsolutePath)
+	if err != nil {
+		result.ErrorMessage = fmt.Sprintf("Failed to delete file: %v", err)
+		// Clean up backup if deletion failed
+		// 削除に失敗した場合はバックアップを削除 🧹
+		if result.BackupCreated {
+			os.Remove(backupPath)
+			result.BackupCreated = false
+			result.BackupPath = ""
+		}
+	} else {
+		result.Success = true
+	}
+
+	// Generate response HTML
+	// レスポンスHTMLを生成するのです！ 📄
+	html := generateDeleteFileHTML(result)
+	return mcp.NewToolResultText(html), nil
+}
+
+// createBackup creates a backup copy of the file
+// ファイルのバックアップコピーを作成するのです！ 📋(◕‿◕)♡
+func createBackup(srcPath, backupPath string) error {
+	// Read source file
+	// ソースファイルを読み取るのです！ 📖
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		return err
+	}
+
+	// Write backup file
+	// バックアップファイルを書き込むのです！ ✍️
+	return os.WriteFile(backupPath, data, 0644)
+}
+
+// generateDeleteFileHTML generates HTML response for file deletion results
+// ファイル削除結果のHTMLレスポンスを生成するのです！ 🎨
+func generateDeleteFileHTML(result *DeleteFileResult) string {
+	html := "<h2>🗑️ Excel File Deletion</h2>\n"
+	html += fmt.Sprintf("<p><strong>File Path:</strong> %s</p>\n", result.FilePath)
+
+	// Status section with color coding
+	// 色分けされたステータスセクション 🎨
+	statusColor := "#dc3545" // Red for failure
+	statusIcon := "❌"
+	statusText := "FAILED"
+
+	if result.Success {
+		statusColor = "#28a745" // Green for success
+		statusIcon = "✅"
+		statusText = "SUCCESS"
+	} else if !result.FileExisted {
+		statusColor = "#ffc107" // Yellow for not found
+		statusIcon = "⚠️"
+		statusText = "NOT FOUND"
+	}
+
+	html += fmt.Sprintf("<h3>Status: <span style='color: %s;'>%s %s</span></h3>\n",
+		statusColor, statusIcon, statusText)
+
+	// File information table
+	// ファイル情報テーブル 📊
+	html += "<div style='background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 15px; margin: 10px 0;'>\n"
+	html += "<table style='border-collapse: collapse; width: 100%;'>\n"
+	html += "<tr style='background-color: #e9ecef;'>\n"
+	html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: left;'>Property</th>\n"
+	html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: left;'>Value</th>\n"
+	html += "</tr>\n"
+
+	// File existed status
+	existedIcon := "❌"
+	if result.FileExisted {
+		existedIcon = "✅"
+	}
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>File Existed</td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px;'>%s %v</td>\n", existedIcon, result.FileExisted)
+	html += "</tr>\n"
+
+	// File size
+	if result.FileExisted && result.FileSize > 0 {
+		html += "<tr>\n"
+		html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>File Size</td>\n"
+		html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px;'>%s</td>\n", formatFileSize(result.FileSize))
+		html += "</tr>\n"
+	}
+
+	// Backup information
+	if result.BackupCreated {
+		html += "<tr>\n"
+		html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Backup Created</td>\n"
+		html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px;'>✅ %s</td>\n", result.BackupPath)
+		html += "</tr>\n"
+	}
+
+	// Error message
+	if result.ErrorMessage != "" {
+		html += "<tr>\n"
+		html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Error</td>\n"
+		html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; color: #dc3545;'>%s</td>\n", result.ErrorMessage)
+		html += "</tr>\n"
+	}
+
+	html += "</table>\n"
+	html += "</div>\n"
+
+	// Results summary
+	// 結果サマリー 💡
+	html += "<h3>💡 Summary:</h3>\n"
+	html += "<ul>\n"
+
+	if result.Success {
+		html += "<li>✅ File successfully deleted from filesystem</li>\n"
+		if result.BackupCreated {
+			html += "<li>💾 Backup created before deletion for safety</li>\n"
+			html += fmt.Sprintf("<li>📁 Backup location: %s</li>\n", result.BackupPath)
+		}
+		html += "<li>🧹 File space has been freed up</li>\n"
+	} else if !result.FileExisted {
+		html += "<li>⚠️ File was already deleted or never existed</li>\n"
+		html += "<li>📁 No action was needed</li>\n"
+	} else {
+		html += "<li>❌ File deletion failed</li>\n"
+		html += fmt.Sprintf("<li>🔍 Reason: %s</li>\n", result.ErrorMessage)
+		html += "<li>💡 Check file permissions and try again</li>\n"
+	}
+
+	html += "</ul>\n"
+
+	// Safety warnings
+	// 安全性の警告 ⚠️
+	if result.Success {
+		html += "<div style='background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 10px 0;'>\n"
+		html += "<h4>⚠️ Important Notes:</h4>\n"
+		html += "<ul>\n"
+		html += "<li>🗑️ File has been permanently deleted from the filesystem</li>\n"
+		if result.BackupCreated {
+			html += "<li>💾 A backup copy exists and can be restored if needed</li>\n"
+		} else {
+			html += "<li>⚠️ No backup was created - file is permanently lost</li>\n"
+		}
+		html += "<li>🔄 This action cannot be undone through the MCP server</li>\n"
+		html += "</ul>\n"
+		html += "</div>\n"
+	}
+
+	return html
+}
+
+// formatFileSize formats file size in human readable format
+// ファイルサイズを人間が読みやすい形式にフォーマットするのです！ 📏(´∀｀)♡
+func formatFileSize(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(size)/float64(div), "KMGTPE"[exp])
+}

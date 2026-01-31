@@ -1,0 +1,375 @@
+package tools
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"strconv"
+
+	z "github.com/Oudwins/zog"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/negokaz/excel-mcp-server/internal/excel"
+	imcp "github.com/negokaz/excel-mcp-server/internal/mcp"
+)
+
+// ExcelGoalSeekArguments defines the structure for Excel Goal Seek
+// Excel ゴールシークの構造体だよ～ ✨(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+type ExcelGoalSeekArguments struct {
+	FileAbsolutePath string  `zog:"fileAbsolutePath"`
+	SheetName        string  `zog:"sheetName"`
+	FormulaCell      string  `zog:"formulaCell"`      // Cell containing the formula to solve
+	TargetValue      float64 `zog:"targetValue"`      // The value we want the formula to equal
+	VariableCell     string  `zog:"variableCell"`     // Cell to change to reach the target
+	MaxIterations    int     `zog:"maxIterations"`    // Maximum number of iterations
+	Precision        float64 `zog:"precision"`        // Precision for convergence
+}
+
+// GoalSeekResult represents the result of Goal Seek operation
+// ゴールシーク操作の結果を表すのです！ 🎯(◕‿◕)♡
+type GoalSeekResult struct {
+	Success         bool    `json:"success"`
+	FinalValue      float64 `json:"finalValue"`      // Final value found for variable cell
+	AchievedTarget  float64 `json:"achievedTarget"`  // Actual target achieved
+	Iterations      int     `json:"iterations"`      // Number of iterations used
+	Error           float64 `json:"error"`           // Difference from target
+	OriginalValue   float64 `json:"originalValue"`   // Original value in variable cell
+	Converged       bool    `json:"converged"`       // Whether solution converged
+}
+
+var excelGoalSeekArgumentsSchema = z.Struct(z.Schema{
+	"fileAbsolutePath": z.String().Test(AbsolutePathTest()).Required(),
+	"sheetName":        z.String().Required(),
+	"formulaCell":      z.String().Required(),
+	"targetValue":      z.Float().Required(),
+	"variableCell":     z.String().Required(),
+	"maxIterations":    z.Int().Default(100),
+	"precision":        z.Float().Default(0.001),
+})
+
+func AddExcelGoalSeekTool(server *server.MCPServer) {
+	server.AddTool(mcp.NewTool("excel_goal_seek",
+		mcp.WithDescription("Perform Goal Seek analysis in Excel to find input values that achieve a specific target result in a formula"),
+		mcp.WithString("fileAbsolutePath",
+			mcp.Required(),
+			mcp.Description("Absolute path to the Excel file"),
+		),
+		mcp.WithString("sheetName",
+			mcp.Required(),
+			mcp.Description("Sheet name in the Excel file"),
+		),
+		mcp.WithString("formulaCell",
+			mcp.Required(),
+			mcp.Description("Cell reference containing the formula to solve (e.g., \"D10\")"),
+		),
+		mcp.WithNumber("targetValue",
+			mcp.Required(),
+			mcp.Description("Target value that the formula should equal"),
+		),
+		mcp.WithString("variableCell",
+			mcp.Required(),
+			mcp.Description("Cell reference to change to achieve the target (e.g., \"B5\")"),
+		),
+		mcp.WithNumber("maxIterations",
+			mcp.Description("Maximum number of iterations (default: 100)"),
+		),
+		mcp.WithNumber("precision",
+			mcp.Description("Precision for convergence (default: 0.001)"),
+		),
+	), handleGoalSeek)
+}
+
+func handleGoalSeek(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := ExcelGoalSeekArguments{}
+	issues := excelGoalSeekArgumentsSchema.Parse(request.Params.Arguments, &args)
+	if len(issues) != 0 {
+		return imcp.NewToolResultZogIssueMap(issues), nil
+	}
+
+	// Set defaults if not provided
+	// デフォルト値を設定するのです！ ⚙️
+	if args.MaxIterations == 0 {
+		args.MaxIterations = 100
+	}
+	
+	// Claude Desktop timeout prevention - limit iterations
+	// Claude Desktopタイムアウト防止 - 反復回数を制限するのです！ ⏰(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧
+	if args.MaxIterations > ArrayLimits.MaxGoalSeekIterations {
+		args.MaxIterations = ArrayLimits.MaxGoalSeekIterations
+	}
+	if args.Precision == 0 {
+		args.Precision = 0.001
+	}
+
+	return performGoalSeek(args.FileAbsolutePath, args.SheetName, args.FormulaCell, args.TargetValue, args.VariableCell, args.MaxIterations, args.Precision)
+}
+
+func performGoalSeek(fileAbsolutePath string, sheetName string, formulaCell string, targetValue float64, variableCell string, maxIterations int, precision float64) (*mcp.CallToolResult, error) {
+	workbook, closeFn, err := excel.OpenFile(fileAbsolutePath)
+	if err != nil {
+		return nil, err
+	}
+	defer closeFn()
+
+	// Get the worksheet
+	worksheet, err := workbook.FindSheet(sheetName)
+	if err != nil {
+		return imcp.NewToolResultInvalidArgumentError(err.Error()), nil
+	}
+	defer worksheet.Release()
+
+	// Perform Goal Seek algorithm
+	// ゴールシークアルゴリズムを実行するのです！ 🎯✨
+	result, err := runGoalSeekAlgorithm(worksheet, formulaCell, targetValue, variableCell, maxIterations, precision)
+	if err != nil {
+		return nil, fmt.Errorf("failed to perform goal seek: %w", err)
+	}
+
+	// Set the final value in the variable cell
+	// 変数セルに最終値を設定するのです！ (◕‿◕)♡
+	if result.Success {
+		err = worksheet.SetValue(variableCell, result.FinalValue)
+		if err != nil {
+			return nil, fmt.Errorf("failed to set final value: %w", err)
+		}
+	}
+
+	// Save the workbook with the final result
+	// 最終結果とともにワークブックを保存するのです！ 💾
+	if err := workbook.Save(); err != nil {
+		return nil, err
+	}
+
+	// Generate response showing Goal Seek results
+	// ゴールシーク結果を表示するレスポンスを生成するのです！ 📊
+	html := "<h2>🎯 Goal Seek Analysis Complete</h2>\n"
+	html += fmt.Sprintf("<p><strong>File:</strong> %s</p>\n", fileAbsolutePath)
+	html += fmt.Sprintf("<p><strong>Sheet:</strong> %s</p>\n", sheetName)
+	html += fmt.Sprintf("<p><strong>Backend:</strong> %s</p>\n", workbook.GetBackendName())
+
+	html += "<h3>📋 Goal Seek Parameters:</h3>\n"
+	html += "<ul>\n"
+	html += fmt.Sprintf("<li><strong>Formula Cell:</strong> %s</li>\n", formulaCell)
+	html += fmt.Sprintf("<li><strong>Target Value:</strong> %.6f</li>\n", targetValue)
+	html += fmt.Sprintf("<li><strong>Variable Cell:</strong> %s</li>\n", variableCell)
+	html += fmt.Sprintf("<li><strong>Max Iterations:</strong> %d</li>\n", maxIterations)
+	html += fmt.Sprintf("<li><strong>Precision:</strong> %.6f</li>\n", precision)
+	html += "</ul>\n"
+
+	// Results section with color coding
+	// 色分けされた結果セクション ✨
+	html += "<h3>📊 Results:</h3>\n"
+	html += "<div style='background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 15px; margin: 10px 0;'>\n"
+
+	statusColor := "#dc3545" // Red for failure
+	statusIcon := "❌"
+	if result.Success {
+		statusColor = "#28a745" // Green for success
+		statusIcon = "✅"
+	}
+
+	html += fmt.Sprintf("<p><strong>Status:</strong> <span style='color: %s;'>%s %s</span></p>\n", 
+		statusColor, statusIcon, map[bool]string{true: "SUCCESS", false: "FAILED"}[result.Success])
+
+	html += "<table style='border-collapse: collapse; width: 100%; margin: 10px 0;'>\n"
+	html += "<tr style='background-color: #e9ecef;'>\n"
+	html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: left;'>Metric</th>\n"
+	html += "<th style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>Value</th>\n"
+	html += "</tr>\n"
+
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Original Value</td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>%.6f</td>\n", result.OriginalValue)
+	html += "</tr>\n"
+
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Final Value</td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right; font-weight: bold;'>%.6f</td>\n", result.FinalValue)
+	html += "</tr>\n"
+
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Target Value</td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>%.6f</td>\n", targetValue)
+	html += "</tr>\n"
+
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Achieved Target</td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>%.6f</td>\n", result.AchievedTarget)
+	html += "</tr>\n"
+
+	errorColor := "#dc3545"
+	if math.Abs(result.Error) <= precision {
+		errorColor = "#28a745"
+	}
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Error (Target - Achieved)</td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right; color: %s;'>%.6f</td>\n", errorColor, result.Error)
+	html += "</tr>\n"
+
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Iterations Used</td>\n"
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>%d</td>\n", result.Iterations)
+	html += "</tr>\n"
+
+	html += "<tr>\n"
+	html += "<td style='border: 1px solid #adb5bd; padding: 8px;'>Converged</td>\n"
+	convergedIcon := "❌"
+	if result.Converged {
+		convergedIcon = "✅"
+	}
+	html += fmt.Sprintf("<td style='border: 1px solid #adb5bd; padding: 8px; text-align: right;'>%s %v</td>\n", convergedIcon, result.Converged)
+	html += "</tr>\n"
+
+	html += "</table>\n"
+	html += "</div>\n"
+
+	// Add interpretation and recommendations
+	// 解釈と推奨事項を追加するのです！ 💡
+	html += "<h3>💡 Analysis:</h3>\n"
+	html += "<ul>\n"
+
+	if result.Success {
+		html += fmt.Sprintf("<li>✅ Goal Seek successfully found a solution after %d iterations</li>\n", result.Iterations)
+		html += fmt.Sprintf("<li>📈 Changing %s from %.6f to %.6f achieves the target</li>\n", 
+			variableCell, result.OriginalValue, result.FinalValue)
+		
+		changePercent := ((result.FinalValue - result.OriginalValue) / result.OriginalValue) * 100
+		if !math.IsInf(changePercent, 0) && !math.IsNaN(changePercent) {
+			html += fmt.Sprintf("<li>📊 This represents a %.2f%% change from the original value</li>\n", changePercent)
+		}
+	} else {
+		html += "<li>❌ Goal Seek could not find a solution within the specified parameters</li>\n"
+		html += "<li>💡 Try increasing max iterations or adjusting precision</li>\n"
+		html += "<li>🔍 Verify that the formula cell depends on the variable cell</li>\n"
+	}
+
+	if math.Abs(result.Error) <= precision {
+		html += "<li>🎯 The solution meets the specified precision requirements</li>\n"
+	} else {
+		html += "<li>⚠️ The solution does not meet the precision requirements</li>\n"
+	}
+
+	html += "</ul>\n"
+
+	html += "<p><strong>🎯 Goal Seek analysis has been completed and the workbook has been updated!</strong></p>\n"
+
+	return mcp.NewToolResultText(html), nil
+}
+
+// runGoalSeekAlgorithm implements the Newton-Raphson method for Goal Seek
+// ゴールシーク用のニュートン・ラフソン法を実装するのです！ 🔬✨
+func runGoalSeekAlgorithm(worksheet excel.Worksheet, formulaCell string, targetValue float64, variableCell string, maxIterations int, precision float64) (*GoalSeekResult, error) {
+	// Get original value in variable cell
+	// 変数セルの元の値を取得するのです！ 📋
+	originalValueStr, err := worksheet.GetValue(variableCell)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get original value: %w", err)
+	}
+
+	originalValue, err := strconv.ParseFloat(originalValueStr, 64)
+	if err != nil {
+		return nil, fmt.Errorf("variable cell must contain a numeric value: %w", err)
+	}
+
+	result := &GoalSeekResult{
+		OriginalValue: originalValue,
+		FinalValue:    originalValue,
+		Iterations:    0,
+		Success:       false,
+		Converged:     false,
+	}
+
+	currentValue := originalValue
+	
+	// Newton-Raphson iteration
+	// ニュートン・ラフソン反復法だよ～ 🔄(◕‿◕)♡
+	for i := 0; i < maxIterations; i++ {
+		result.Iterations = i + 1
+
+		// Set current value and calculate formula result
+		// 現在値を設定して数式結果を計算するのです！ ⚡
+		err = worksheet.SetValue(variableCell, currentValue)
+		if err != nil {
+			return result, fmt.Errorf("failed to set variable value: %w", err)
+		}
+
+		// Get formula result
+		// 数式結果を取得するのです！ 📊
+		formulaResultStr, err := worksheet.GetValue(formulaCell)
+		if err != nil {
+			return result, fmt.Errorf("failed to get formula result: %w", err)
+		}
+
+		formulaResult, err := strconv.ParseFloat(formulaResultStr, 64)
+		if err != nil {
+			return result, fmt.Errorf("formula cell must return a numeric value: %w", err)
+		}
+
+		result.AchievedTarget = formulaResult
+		result.Error = targetValue - formulaResult
+
+		// Check for convergence
+		// 収束をチェックするのです！ 🎯
+		if math.Abs(result.Error) <= precision {
+			result.Success = true
+			result.Converged = true
+			result.FinalValue = currentValue
+			break
+		}
+
+		// Calculate derivative using small perturbation
+		// 小さな摂動を使って導関数を計算するのです！ 📐
+		delta := math.Max(math.Abs(currentValue) * 0.0001, 0.0001)
+		
+		err = worksheet.SetValue(variableCell, currentValue + delta)
+		if err != nil {
+			return result, fmt.Errorf("failed to set perturbed value: %w", err)
+		}
+
+		perturbedResultStr, err := worksheet.GetValue(formulaCell)
+		if err != nil {
+			return result, fmt.Errorf("failed to get perturbed result: %w", err)
+		}
+
+		perturbedResult, err := strconv.ParseFloat(perturbedResultStr, 64)
+		if err != nil {
+			return result, fmt.Errorf("perturbed formula result must be numeric: %w", err)
+		}
+
+		// Calculate derivative
+		// 導関数を計算するのです！ 📈
+		derivative := (perturbedResult - formulaResult) / delta
+
+		if math.Abs(derivative) < 1e-10 {
+			// Derivative too small, try different approach
+			// 導関数が小さすぎる場合、別のアプローチを試すのです！ 🔄
+			break
+		}
+
+		// Newton-Raphson step
+		// ニュートン・ラフソンステップ ⚡
+		nextValue := currentValue - result.Error / derivative
+
+		// Apply some damping to prevent oscillation
+		// 振動を防ぐためのダンピングを適用するのです！ 🌊
+		dampingFactor := 0.5
+		if i > 10 {
+			dampingFactor = 0.25
+		}
+		
+		currentValue = currentValue + dampingFactor * (nextValue - currentValue)
+		result.FinalValue = currentValue
+	}
+
+	// If we've reached max iterations without convergence
+	// 収束せずに最大反復回数に達した場合 ⏰
+	if result.Iterations >= maxIterations && !result.Converged {
+		// Still mark as success if we're reasonably close
+		// それでも合理的に近い場合は成功とマークするのです！ 🎯
+		if math.Abs(result.Error) <= precision * 10 {
+			result.Success = true
+		}
+	}
+
+	return result, nil
+}

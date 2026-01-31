@@ -19,6 +19,19 @@ npm run watch
 npm run debug
 ```
 
+### テスト
+```bash
+go test ./...                           # 全Goテスト実行
+go test ./internal/tools -v             # 特定パッケージのテスト
+go test -run TestReadSheetData ./internal/tools  # 特定テスト実行
+```
+
+### リンティングとフォーマット
+```bash
+go fmt ./...      # Goコードのフォーマット
+go vet ./...      # Goコードの静的解析
+```
+
 ## アーキテクチャ
 
 ### コアコンポーネント
@@ -29,7 +42,7 @@ npm run debug
   - `internal/excel/`: Excel操作のインターフェースと実装
   - `internal/tools/`: MCPツールの実装
 
-- **TypeScriptランチャー**: 
+- **TypeScriptランチャー**:
   - `launcher/launcher.ts`: プラットフォーム固有のバイナリを起動
   - Goバイナリの配布とプロセス管理を担当
 
@@ -47,9 +60,17 @@ npm run debug
 - `excel_describe_sheets.go`: シート情報取得
 - `excel_read_sheet.go`: データ読み取り（ページネーション対応）
 - `excel_write_to_sheet.go`: データ書き込み（新規ファイル対応）
+- `excel_format_range.go`: セル書式設定（上流から）
 - `excel_create_table.go`: テーブル作成
 - `excel_copy_sheet.go`: シートコピー
 - `excel_screen_capture.go`: スクリーンキャプチャ（Windows専用）
+
+### 財務モデリング機能（フェーズ1）
+- `excel_financial_template.go`: 財務テンプレート
+- `excel_circular_reference.go`: 循環参照検出
+- `excel_model_validation.go`: モデル検証
+- `excel_financial_formatting.go`: 財務書式設定
+- `excel_historical_analysis.go`: 履歴分析
 
 ### 設定
 
@@ -68,18 +89,47 @@ npm run debug
 - **OLEバックエンド**: `NewExcelOleWithNewFile()`でExcelアプリケーション経由作成
 - **クロスプラットフォーム対応**: macOS/LinuxではExcelizeを使用
 
-### 使用可能なツール
-- `excel_create_file`: 明示的な新規ファイル作成（カスタムシート名対応）
-- `excel_write_to_sheet`: データ書き込み時の自動ファイル作成
-- その他全ツール: 存在しないファイルに対する自動作成
+## ファイル構造
 
-## 開発時の注意点
+```
+cmd/excel-mcp-server/     # メインアプリケーションエントリーポイント
+internal/
+  excel/                  # Excel抽象化レイヤー
+  server/                 # MCPサーバー実装
+  tools/                  # MCPツール実装
+launcher/                 # TypeScriptランチャー
+memory-bank/              # 開発コンテキストと進捗
+```
 
-- Windowsでのみ利用可能な機能は`runtime.GOOS == "windows"`で条件分岐
-- ページネーション機能により大きなExcelファイルも効率的に処理
-- GoReleaserによるマルチプラットフォームバイナリ生成（`.goreleaser.yaml`）
-- NPMパッケージとしてTypeScriptランチャー経由で配布
-- **新規ファイル作成**: 全ツールが非存在ファイルパスに対応
+## ビルドシステム
+
+GoReleaser（`.goreleaser.yaml`）でクロスプラットフォームバイナリを生成：
+- Windows: amd64, 386, arm64
+- macOS: amd64, arm64
+- Linux: amd64, 386, arm64
+
+TypeScriptランチャーは`dist/launcher.js`にコンパイルされ、NPMで公開されます。
+
+## プラットフォーム差異
+
+**Windows専用機能**:
+- OLE自動化によるライブExcel操作
+- スクリーンキャプチャ機能
+- Excelのインストールが必要
+
+**クロスプラットフォーム機能**:
+- ファイルベースのExcel操作のみ
+- ライブ編集機能なし
+- xlsx, xlsm, xltx, xltm形式をサポート
+
+## 依存関係
+
+**Go**: Go 1.23.0以上（Go 1.24.0ツールチェーン推奨）
+**Node.js**: TypeScriptコンパイル用にNode.js 20.x以上
+**主要パッケージ**:
+- `github.com/mark3labs/mcp-go` - MCPフレームワーク
+- `github.com/xuri/excelize/v2` - Excelファイル操作
+- `github.com/go-ole/go-ole` - Windows OLE自動化
 
 ## 開発ワークフロー
 

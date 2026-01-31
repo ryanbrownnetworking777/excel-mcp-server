@@ -12,3 +12,7 @@ repomix-output.xml
 
 # Local reference files
 pr_link.txt
+
+# Claude Code
+CLAUDE.local.md
+.claude/settings.local.json
