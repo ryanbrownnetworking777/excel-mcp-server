@@ -16,7 +16,7 @@ type ExcelCreateFileArguments struct {
 	SheetNames       []string `zog:"sheetNames"`
 }
 
-var excelCreateFileArgumentsSchema = z.Struct(z.Schema{
+var excelCreateFileArgumentsSchema = z.Struct(z.Shape{
 	"fileAbsolutePath": z.String().Test(AbsolutePathTest()).Required(),
 	"sheetNames":       z.Slice(z.String()).Optional().Default([]string{"Sheet1"}),
 })
